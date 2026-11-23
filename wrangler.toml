@@ -1,0 +1,23 @@
+# Cloudflare Workers: runs src/worker.js (which runs src/service.js, the same code Node runs).
+# Not deployed yet: the demo runs on 127.0.0.1. Needs Workers Paid (reading a research stream takes
+# more than the free plan's 10 ms of CPU). Deploy with `npx wrangler deploy`.
+#
+# Settings are NOT in this file. Add them under the Worker > Settings > Variables and Secrets:
+#   ANTHROPIC_API_KEY    as a secret (required)
+#   ALLOWED_ORIGINS      the hosted page's origin (never *)
+#   (REQUIRE_LARK_LOGIN stays on; LARK_BASE_TOKEN / LARK_TABLE_ID default to the procurement table)
+name = "price-research"
+main = "src/worker.js"
+compatibility_date = "2026-05-01"
+keep_vars = true
+
+[limits]
+cpu_ms = 30000
+
+[[rules]]
+type = "Text"
+globs = ["**/*.md"]
+fallthrough = true
+
+[observability]
+enabled = true

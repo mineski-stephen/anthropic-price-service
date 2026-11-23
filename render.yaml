@@ -1,0 +1,19 @@
+# Render Blueprint for the price research service (Node, server.js). Not deployed yet: the demo
+# runs on 127.0.0.1. The same code also runs on Cloudflare Workers (wrangler.toml).
+#   Render > New > Blueprint > pick the repo > Apply.
+services:
+  - type: web
+    name: price-research
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    plan: free
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false            # required; set it in the dashboard, never in this file
+      - key: REQUIRE_LARK_LOGIN
+        value: "true"          # must stay on anywhere but 127.0.0.1 (server.js refuses otherwise)
+      - key: ALLOWED_ORIGINS
+        sync: false            # the hosted page's origin (never *)
+      - key: MAX_RUN_USD
+        value: "2"

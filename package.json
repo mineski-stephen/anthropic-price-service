@@ -1,0 +1,14 @@
+{
+  "name": "price-research",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The price check demo's service: researches a market price with Claude and web search, then checks every listing against the pages it read. Node (server.js) and Cloudflare Workers (src/worker.js).",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test tests/",
+    "dev:worker": "npx wrangler dev",
+    "deploy:worker": "npx wrangler deploy"
+  }
+}
