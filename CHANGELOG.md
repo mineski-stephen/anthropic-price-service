@@ -2,6 +2,13 @@
 
 Newest first. Each entry's number is `VERSION` in `src/service.js` and `version` in `package.json`.
 
+## 0.4.0 · Nov 24, 2026
+
+- New depth **`check`** for the page's Quick web check on Haiku: medium effort, 3 searches, **5 page reads** of 4,000 tokens each, its own US$0.15 cap. The request asks Claude to open the most useful offers' pages before reporting, suggests Philippine retailers that publish prices (for items in the Philippines), and skips Lazada, Shopee, Carousell and social sites (`SKIP_SITES`) unless the person chose their own site list.
+- Sizes are converted to the requested unit (a 3 m × 4 m LED wall is 12 sqm), so per-wall or per-set service prices can count.
+- A listing Claude left undated takes its search result's age ("1910 days ago", "March 3, 2021"), so old prices show as old.
+- A depth may now cap its own spending below `MAX_RUN_USD`.
+
 ## 0.3.0 · Nov 24, 2026
 
 - **Lazada removed** (`src/market.js`, `"source": "marketplace"`, the `MARKET_*` settings): Lazada answers Cloudflare's servers with its slider bot check, so it can't run where the service runs.

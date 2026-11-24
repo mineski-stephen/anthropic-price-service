@@ -61,7 +61,7 @@ test("GET / reports the service, version, models, depths and allowed headers, ne
   assert.deepEqual(info.cors.allow_headers, ALLOW_HEADERS);
   assert.deepEqual(info.models.map((m) => m.id), ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]);
   assert.equal(info.models.find((m) => m.default).id, "claude-opus-5-5");
-  assert.deepEqual(info.depths.map((d) => d.id), ["quick", "standard", "thorough"]);
+  assert.deepEqual(info.depths.map((d) => d.id), ["check", "quick", "standard", "thorough"]);
   assert.equal(info.login.required, false);
   assert.equal(res.headers.get("Access-Control-Allow-Origin"), "*");
   assert.ok(!JSON.stringify(info).includes(ENV.ANTHROPIC_API_KEY));

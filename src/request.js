@@ -25,13 +25,22 @@ export const MODELS = {
 export const DEFAULT_MODEL = "claude-opus-5-5";
 
 /* Per depth: effort, the most searches and page reads per request, and how many times a paused
-   turn may be continued. "Find suppliers too" adds SUPPLIER_EXTRA. */
+   turn may be continued. "Find suppliers too" adds SUPPLIER_EXTRA. contentTokens: how much of each
+   opened page Claude reads. maxUsd: this depth's own spending cap (below MAX_RUN_USD).
+   "check" is the page's Quick web check on Haiku: few searches, but the sellers' pages opened, so
+   prices are confirmed on the page; marketplaces skipped and price-listing retailers suggested. */
 export const DEPTHS = {
+  check: { label: "Check", effort: "medium", searches: 3, fetches: 5, continuations: 1, contentTokens: 4000, maxUsd: 0.15, focused: true },
   quick: { label: "Quick", effort: "low", searches: 3, fetches: 2, continuations: 1 },
   standard: { label: "Standard", effort: "medium", searches: 6, fetches: 4, continuations: 2 },
   thorough: { label: "Thorough", effort: "high", searches: 10, fetches: 8, continuations: 4 },
 };
 export const SUPPLIER_EXTRA = { searches: 2, fetches: 2 };
+/* Skipped by focused checks: marketplaces and social sites refuse page readers or list one-off
+   sellers, so their prices can't be confirmed. */
+export const SKIP_SITES = ["lazada.com.ph", "shopee.ph", "carousell.ph", "facebook.com", "tiktok.com", "instagram.com"];
+/* Philippine retailers that publish prices on their own pages (named for the search, not enforced). */
+export const PH_RETAILERS = "ACE Hardware, Wilcon Depot, Handyman, CW Home Depot, AllHome, Office Warehouse, National Book Store, PC Express, DynaQuest, Villman, Abenson, Anson's, SM Appliance";
 
 export const MARKETS = {
   PH: { name: "the Philippines", currency: "PHP", timezone: "Asia/Manila", vat: 0.12 },
@@ -173,9 +182,10 @@ export function buildTools(input) {
   if (input.city) where.city = input.city;
   const filtering = MODELS[input.model] ? MODELS[input.model].filtering : true;
   const search = { type: filtering ? "web_search_20260318" : "web_search_20250305", name: "web_search", max_uses: d.searches + extra.searches, user_location: where };
-  const fetch = { type: filtering ? "web_fetch_20260318" : "web_fetch_20250910", name: "web_fetch", max_uses: d.fetches + extra.fetches, max_content_tokens: 6000 };
+  const fetch = { type: filtering ? "web_fetch_20260318" : "web_fetch_20250910", name: "web_fetch", max_uses: d.fetches + extra.fetches, max_content_tokens: d.contentTokens || 6000 };
   if (input.sites.mode === "only") { search.allowed_domains = [...input.sites.list]; fetch.allowed_domains = [...input.sites.list]; }
   if (input.sites.mode === "skip") { search.blocked_domains = [...input.sites.list]; fetch.blocked_domains = [...input.sites.list]; }
+  if (d.focused && input.sites.mode === "none") { search.blocked_domains = [...SKIP_SITES]; fetch.blocked_domains = [...SKIP_SITES]; }
   return [search, fetch, REPORT_TOOL];
 }
 
@@ -214,6 +224,10 @@ export function userText(input, today) {
   ];
   if (input.kind === "item") lines.push(`Condition: ${input.condition === "any" ? "new or used" : "new only"}`);
   lines.push(`Depth: ${d.label.toLowerCase()}. You have up to ${d.searches + extra.searches} web searches and ${d.fetches + extra.fetches} page reads.`);
+  if (d.focused) {
+    lines.push("Before reporting, open the pages of the most useful offers with web_fetch (up to your page reads), so each price is confirmed on its own page. Report only prices you saw on a page or in a search result.");
+    if (input.market === "PH" && input.kind === "item") lines.push(`Prefer sellers that publish prices on their own pages, for example: ${PH_RETAILERS}, and brand or distributor stores.`);
+  }
   lines.push(input.suppliers ? "Suppliers: also list 3 to 6 suppliers procurement could contact." : "Suppliers: not needed; leave the suppliers list empty unless a seller is clearly worth contacting.");
   if (input.sites.mode === "only") lines.push(`Only use these sites: ${input.sites.list.join(", ")}`);
   if (input.sites.mode === "skip") lines.push(`Don't use these sites: ${input.sites.list.join(", ")}`);

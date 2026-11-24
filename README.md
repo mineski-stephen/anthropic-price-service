@@ -98,7 +98,19 @@ The stream adds `activity` `costings` (`count`, `available`).
 
 ## Quick web check (Haiku)
 
-Claude Haiku 5.5 has no dynamic filtering, so with Haiku the service sends the plain tools, `web_search_20250305` and `web_fetch_20250910`; Opus and Sonnet keep `web_search_20260318` / `web_fetch_20260318`. Everything else is the same run. The page's Quick web check is `model: "claude-haiku-5-5"`, `depth: "quick"` (3 searches, 2 page reads, effort low), `suppliers: false`.
+Claude Haiku 5.5 has no dynamic filtering, so with Haiku the service sends the plain tools, `web_search_20250305` and `web_fetch_20250910`; Opus and Sonnet keep `web_search_20260318` / `web_fetch_20260318`. Everything else is the same run.
+
+The page's Quick web check is `model: "claude-haiku-5-5"`, `depth: "check"`, `suppliers: false`. The `check` depth:
+
+| | |
+| - | - |
+| Effort | medium |
+| Searches / page reads | 3 / 5, each page read up to 4,000 tokens |
+| Spending cap | US$0.15 (below `MAX_RUN_USD`) |
+| Sites | Lazada, Shopee, Carousell, Facebook, TikTok and Instagram skipped (`SKIP_SITES`), unless the request has its own site list |
+| Instructions | open the most useful offers' pages before reporting; for items in the Philippines, prefer retailers that publish prices (`PH_RETAILERS`) |
+
+Undated listings take their search result's age, so the page leaves offers over 12 months old out of the typical price.
 
 ## How a web research run works
 
@@ -169,6 +181,6 @@ npm start                # http://127.0.0.1:8003
 
 **Past costings:** free (one D1 query; D1's free plan allows 5 million reads a day).
 
-**Quick web check:** up to 3 searches (US$0.03) plus Haiku tokens. To be measured.
+**Quick web check:** up to 3 searches (US$0.03) plus Haiku tokens: measured at US$0.025-0.036 a check on the Worker, with 29-40 ms of CPU (above the free plan's stated 10 ms, but both runs finished).
 
 **Web research:** web search is US$10 per 1,000 searches, plus tokens. Web fetch and the filtering code cost only tokens. Each report's `meta.cost_usd` says what it cost (`src/cost.js` holds the prices), and the log line for each run has the tokens and the total.

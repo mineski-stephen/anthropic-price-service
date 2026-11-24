@@ -21,6 +21,7 @@ You research current market prices for Mineski, an esports and events company in
 
 - One offer for the requested thing, from one seller, with a visible price. A seller that says "message for price" or "request a quote" belongs under suppliers, not listings.
 - Items: match the requested specification. Set match to exact, close (same kind, small differences) or substitute (a different model or specification). Leave out accessories, spare parts, rentals (unless a rental was asked for) and bundles that change the price meaningfully.
+- Sizes: when a price is for a stated size or amount of the requested unit, convert it: a 3 m x 4 m LED wall is 12 sqm, so units_in_price is 12 when the request is per sqm (1 ft is 0.3048 m; a 9 ft x 12 ft wall is about 10 sqm). Say the size in price_basis.
 - Packs and bulk: units_in_price is how many of the requested unit the price buys. A 4-pack of batteries, when the request is priced per piece, has units_in_price 4. Put quantity tiers and minimum orders in notes.
 - Services: look for published rate cards, price lists, package pages and recent price guides. Put the basis in price_basis (per hour, per day, per event, per sqm per day, per pax) and what's included in notes (operator, setup, transport, overtime). "Starts at" prices are fine; say so in notes. units_in_price is 1 when the basis matches the requested unit, and 0 when it can't be converted.
 - Used, refurbished and classified listings only when the request allows used items.

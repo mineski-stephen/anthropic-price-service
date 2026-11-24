@@ -25,7 +25,7 @@ export class RunError extends Error {
 }
 
 /** Typical run length per depth, before the page has timings of its own (ms). */
-export const ESTIMATE_MS = { quick: 60000, standard: 120000, thorough: 240000 };
+export const ESTIMATE_MS = { check: 45000, quick: 60000, standard: 120000, thorough: 240000 };
 
 export const caps = (input) => {
   const d = DEPTHS[input.depth];
@@ -57,6 +57,7 @@ export function progress(ev, block, emit) {
 
 /** Run the research. Resolves { report (submit_report's input), run }; throws RunError or ClaudeError. */
 export async function runResearch({ client, input, system, today, cfg, signal = null, emit = () => {}, log = () => {}, onResponse = null }) {
+  const cap = Math.min(cfg.maxRunUsd, DEPTHS[input.depth].maxUsd || Infinity);   // a depth may have its own, lower cap
   const tools = buildTools(input);
   const limits = caps(input);
   const messages = [{ role: "user", content: [{ type: "text", text: userText(input, today) }] }];
@@ -101,13 +102,13 @@ export async function runResearch({ client, input, system, today, cfg, signal = 
     const stop = msg.stop_reason;
     if (stop === "refusal") throw new RunError("refused", "Claude declined this request. Rephrase the item or service and try again.");
     if (stop === "max_tokens") throw new RunError("too_long", "The report came out too long. Try a more specific name, or Quick.");
-    if (run.tally.cost.total >= cfg.maxRunUsd) throw new RunError("budget", `This run reached its spending limit (US$${cfg.maxRunUsd}) before it finished. Try Quick, or a more specific name.`);
+    if (run.tally.cost.total >= cap) throw new RunError("budget", `This run reached its spending limit (US$${cap}) before it finished. Try a more specific name.`);
 
     if (stop === "pause_turn") {
       if (!msg.resumable) throw new RunError("upstream_error", `Claude's answer couldn't be continued (${msg.problem || "unknown block"}).`);
       messages.push({ role: "assistant", content: msg.content });
       run.continuations++;
-      const over = run.continuations > limits.continuations || run.tally.cost.total >= cfg.maxRunUsd * 0.7;
+      const over = run.continuations > limits.continuations || run.tally.cost.total >= cap * 0.7;
       if (over && !run.wrapped) {
         messages.push({ role: "system", content: WRAP_UP });
         run.wrapped = true;

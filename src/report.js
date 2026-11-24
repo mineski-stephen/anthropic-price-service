@@ -72,14 +72,35 @@ export function cleanSupplier(s = {}) {
 }
 
 /** Build the report. raw: submit_report's input; ev: collectEvidence(); run: the run loop's result. */
+/** A search result's page_age ("2026-11-01", "March 3, 2021", "3 years ago", "1910 days ago") as
+ *  YYYY-MM-DD, or "". */
+export function pageAgeDate(age, now = Date.now()) {
+  const s = String(age || "").trim();
+  if (!s) return "";
+  const rel = s.match(/^(\d+)\s*(day|week|month|year)s?\s*ago$/i);
+  if (rel) {
+    const n = Number(rel[1]), unit = rel[2].toLowerCase();
+    const days = unit === "day" ? n : unit === "week" ? n * 7 : unit === "month" ? n * 30.44 : n * 365.25;
+    return new Date(now - days * 86400000).toISOString().slice(0, 10);
+  }
+  if (/^\d{4}-\d{2}(-\d{2})?/.test(s)) return s.slice(0, 10);
+  const utc = Date.parse(`${s} UTC`);   // a written date ("March 3, 2021") is read as that day, not shifted by the time zone
+  const t = Number.isFinite(utc) ? utc : Date.parse(s);
+  return Number.isFinite(t) ? new Date(t).toISOString().slice(0, 10) : "";
+}
+
 export function buildReport({ input, raw = {}, ev, run, id, createdAt, service, startedAt, costings = null }) {
   const market = MARKETS[input.market];
+  // When Claude leaves a listing undated, its search result's age stands in (so old prices show as old).
+  const ageOf = new Map(ev.pages.filter((p) => p.page_age).map((p) => [normUrl(p.url), p.page_age]));
+  const now = Date.parse(createdAt) || Date.now();
   const ix = index(ev);
   const seen = new Set();
   const listings = [];
   for (const l of Array.isArray(raw.listings) ? raw.listings : []) {
     const c = cleanListing(l);
     if (!c.title && !c.url) continue;
+    if (!c.page_date && ageOf.has(normUrl(c.url))) c.page_date = pageAgeDate(ageOf.get(normUrl(c.url)), now);
     const dedupe = `${normUrl(c.url) || c.title.toLowerCase()}|${c.price}`;
     if (seen.has(dedupe)) continue;
     seen.add(dedupe);

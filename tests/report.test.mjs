@@ -97,3 +97,14 @@ test("costs: tokens per model, the search fee, Haiku's long-prompt price", () =>
   near(t.cost.searches, 0.05);
   near(t.cost.total, 0.074);
 });
+
+test("pageAgeDate reads a search result's age", async () => {
+  const { pageAgeDate } = await import("../src/report.js");
+  const now = Date.parse("2026-11-24T00:00:00Z");
+  assert.equal(pageAgeDate("2026-11-01", now), "2026-11-01");
+  assert.equal(pageAgeDate("1910 days ago", now), "2021-09-01");
+  assert.equal(pageAgeDate("3 years ago", now).slice(0, 4), "2023");
+  assert.equal(pageAgeDate("March 3, 2021", now), "2021-03-03");
+  assert.equal(pageAgeDate("", now), "");
+  assert.equal(pageAgeDate("recently", now), "");
+});

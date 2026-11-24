@@ -166,3 +166,22 @@ test("a web check carries the past costings alongside", async () => {
   assert.ok(r.lines.some((l) => l.kind === "costings" && l.count === 2));
   assert.equal(w.bodies[0].tools[0].type, "web_search_20250305");
 });
+
+test("the check depth: Haiku with 5 page reads of 4,000 tokens, marketplaces skipped, retailers suggested", async () => {
+  const { userText, buildBody, DEPTHS } = await import("../src/request.js");
+  const input = readInput({ name: "Monoblock chair", model: "claude-haiku-5-5", depth: "check", suppliers: false });
+  const [search, fetch] = buildTools(input);
+  assert.equal(search.type, "web_search_20250305");
+  assert.equal(search.max_uses, 3);
+  assert.equal(fetch.max_uses, 5);
+  assert.equal(fetch.max_content_tokens, 4000);
+  assert.ok(search.blocked_domains.includes("lazada.com.ph") && fetch.blocked_domains.includes("shopee.ph"));
+  assert.equal(buildBody(input, { system: "x", messages: [] }).output_config.effort, "medium");
+  const text = userText(input, "2026-11-24");
+  assert.match(text, /open the pages of the most useful offers/);
+  assert.match(text, /ACE Hardware, Wilcon Depot/);
+  assert.equal(DEPTHS.check.maxUsd, 0.15);
+  const own = buildTools(readInput({ name: "Chair", model: "claude-haiku-5-5", depth: "check", sites: { mode: "only", list: ["acehardware.ph"] } }));
+  assert.deepEqual(own[0].allowed_domains, ["acehardware.ph"]);
+  assert.equal(own[0].blocked_domains, undefined);
+});

@@ -47,7 +47,7 @@ test("the tools follow the depth, the suppliers option, the market and the site 
     assert.equal(search.max_uses, d.searches);
     assert.equal(fetch.type, "web_fetch_20260318");
     assert.equal(fetch.max_uses, d.fetches);
-    assert.equal(fetch.max_content_tokens, 6000);
+    assert.equal(fetch.max_content_tokens, d.contentTokens || 6000);
     assert.equal(report, REPORT_TOOL);
   }
   const [s, f] = buildTools(base);
