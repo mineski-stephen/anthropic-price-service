@@ -2,6 +2,14 @@
 
 Newest first. Each entry's number is `VERSION` in `src/service.js` and `version` in `package.json`.
 
+## 0.3.0 · Nov 24, 2026
+
+- **Lazada removed** (`src/market.js`, `"source": "marketplace"`, the `MARKET_*` settings): Lazada answers Cloudflare's servers with its slider bot check, so it can't run where the service runs.
+- **Past costings:** `"source": "costings"` searches anthropic-ce's CE line items (the D1 database `ce-data`, bound as `DB`) for the name's words and returns them as the report's listings: budgeted unit cost, markup, client price and, where a purchase order matched, what was actually paid. Free. Web reports carry them too, in `report.costings`. Only read with the Lark login check on, since they're internal; Node has no D1.
+- **Haiku gets the plain web tools** (`web_search_20250305`, `web_fetch_20250910`): it has no dynamic filtering, so the filtering versions would be refused. This is the page's new Quick web check.
+- The prompt's EVIDENCE lines now apply only when Claude filters results with code.
+- New setting `COSTINGS_RATE_LIMIT_PER_HOUR` (default 120). `wrangler.toml` names the Worker `anthropic-price-service`, as deployed, and binds `DB`.
+
 ## 0.2.3 · Nov 24, 2026
 
 - Lazada warm-up: when Lazada answers the data request with a bot check (as it did for the Cloudflare Worker), the service opens the ordinary search page first like a browser, following redirects by hand and keeping every cookie Lazada sets (`hng`, `hng.sig`), then asks for the data again with them. Tried once per check.

@@ -2,8 +2,8 @@
 
 The price check demo's service. It prices an item or service in one of two ways, and streams progress and the report back to the page:
 
-- **Lazada** (`"source": "marketplace"`): Lazada's own search data, sorted by Claude Haiku 5.5. A few seconds, about US$0.002 a check. See [Lazada checks](#lazada-checks).
-- **Web research** (`"source": "web"`, the default): Claude with web search, then every listing is checked against what the research actually saw. One to four minutes, US$0.15-3.
+- **Past costings** (`"source": "costings"`): Mineski's own CE lines from anthropic-ce's D1 database. Free, about a second. See [Past costings](#past-costings).
+- **Web research** (`"source": "web"`, the default): Claude with web search, then every listing is checked against what the research actually saw, with past costings added alongside. On Haiku 5.5 at Quick depth (the page's "Quick web check") under a minute and a few cents; on Opus one to four minutes, US$0.15-3.
 
 It holds the Anthropic key, so the page never does. It does one narrow job ("research this price"), not a general Claude relay. It's built the same way as `tech/anthropic-ce`, with no npm dependencies and no build step: one `src/service.js` runs on Node (`server.js`) and on Cloudflare Workers (`src/worker.js`).
 
@@ -80,21 +80,25 @@ The report's shape is described at the top of `src/report.js`. Each listing carr
 | `link` | The page was seen, but its price wasn't confirmed. |
 | `unverified` | The address never came back from anything. |
 
-## Lazada checks
+## Past costings
 
-`src/market.js`, for `"source": "marketplace"` (markets PH, SG and MY; others are refused with `bad_input`):
+`src/costings.js`. The CE line items anthropic-ce keeps for Suppliers' Line Items tab (one row per distinct CE line per workbook) live in the D1 database `ce-data`, bound here as `DB` too (`wrangler.toml`, read only). They hold internal costs, markups and client names, so:
 
-1. **Lazada's search data.** `GET https://www.lazada.com.ph/catalog/?ajax=true&page=1&q=<name>` answers with JSON: 40 listings with the exact price, crossed-out price, seller, brand, units sold, rating, location, stock and whether it's sponsored. The name is searched alone; the details go to Claude.
-   - This is not an official interface. Lazada may change it, or refuse a server (it answers with a check page instead of data).
-   - When refused, the service warms up once like a browser: it opens the ordinary search page (keeping the `hng` session cookies Lazada sets, through any redirects) and asks again. If that's refused too, the error is `marketplace_blocked`, and nothing is sent to Anthropic. The log line says what Lazada sent.
-   - It worked from this computer on Nov 24, 2026 (40 listings in 0.3 to 0.5 s; reading them took 0.7 ms of CPU). **From Cloudflare Workers it was refused** the same day: Lazada answered the deployed Worker with a check page (HTTP 200, no listing data), so the check ended with `marketplace_blocked` at no cost. Lazada checks need a host whose address Lazada accepts.
-2. **Claude Haiku 5.5 sorts them.** One request, no tools, `output_config.format` (structured output) with `effort: "low"`: for each listing, the match (exact, close, substitute, different), how many units the price buys ("4pcs" = 4), and the condition. It only labels listings; it never supplies a price.
-3. **The report** has web research's shape, with `meta.source: "lazada"` and `meta.depth: "marketplace"`. Listings marked different, or not new when new was asked, are left out and counted in a warning. Every kept listing is `checked` with `via: "marketplace"`. Suppliers are empty.
-4. **If Claude fails** (overloaded, unreadable answer), every listing comes back unsorted with a warning. A refused key, a usage limit or a cancel still stops the run.
+- they're read **only with the Lark login check on** (the procurement table's readers, the same people who see the Line Items tab); with `REQUIRE_LARK_LOGIN=false` a past-costings check is refused (`costings_unavailable`) and web reports carry `costings.available: false`;
+- Node has no D1, so on this computer they're "not available" (`GET /` says `costings.available: false`).
 
-The stream: `start` (with `source`), `activity` `market_search`, `market_results` (count), `sorting`, `usage`, `activity` `checking`, then `report` or `error`.
+**Search:** the name's telling words (3+ letters; "chairs" becomes "chair"; everyday words like rental, service, per, day dropped; at most five) must all appear in the line's item name, description or remarks. Inactive, waived, free and contingency lines are skipped. Newest first, up to 40.
 
-**CPU:** reading about 200 KB of JSON and a short Claude answer takes a few milliseconds, so Lazada checks should fit the Cloudflare Workers free plan (10 ms of CPU per request; waiting on the network doesn't count). Not measured on Cloudflare yet.
+**Each line:** project, client, item and description, qty × frq per unit, unit cost (budgeted), markup, client price per unit, and the price actually paid per unit where a purchase order matched (`actual_php` ÷ qty × frq).
+
+- `"source": "costings"`: the lines become the report's listings (`verification.via: "costings"`, no links), so the page works out the typical price from them. Lines in another unit than the request aren't counted, unless none match. `meta.source: "costings"`, no cost.
+- `"source": "web"`: the search runs alongside the research, and the report carries `costings: { available, reason, terms, lines }`.
+
+The stream adds `activity` `costings` (`count`, `available`).
+
+## Quick web check (Haiku)
+
+Claude Haiku 5.5 has no dynamic filtering, so with Haiku the service sends the plain tools, `web_search_20250305` and `web_fetch_20250910`; Opus and Sonnet keep `web_search_20260318` / `web_fetch_20260318`. Everything else is the same run. The page's Quick web check is `model: "claude-haiku-5-5"`, `depth: "quick"` (3 searches, 2 page reads, effort low), `suppliers: false`.
 
 ## How a web research run works
 
@@ -135,9 +139,7 @@ The stream: `start` (with `source`), `activity` `market_search`, `market_results
 | `MAX_OUTPUT_TOKENS` | `64000` | |
 | `RATE_LIMIT_PER_HOUR` | `10` | Runs per person (per copy on Workers). |
 | `MAX_CONCURRENT` | `2` | Runs at once. |
-| `MARKET_MODEL` | `claude-haiku-5-5` | The model that sorts Lazada listings. |
-| `MARKET_RATE_LIMIT_PER_HOUR` | `60` | Lazada checks per person (per copy on Workers). |
-| `MARKET_THINKING` | `true` | `false`: the sorting model answers without thinking first (faster, about as good in tests). |
+| `COSTINGS_RATE_LIMIT_PER_HOUR` | `120` | Past-costings-only checks per person (per copy on Workers). |
 | `REQUEST_TIMEOUT`, `RUN_TIMEOUT` | `300`, `480` | Seconds per Anthropic request, and per run. |
 | `TZ_OFFSET_HOURS` | `8` | For "today's date" and log times. |
 | `HOST`, `PORT` | `127.0.0.1`, `8003` | Node only. |
@@ -156,8 +158,8 @@ npm start                # http://127.0.0.1:8003
 
 1. **Choose a host.**
    - **Render:** `render.yaml` and the `Dockerfile`, Node, no CPU limit. The free plan sleeps, and the page wakes it.
-   - **Cloudflare Workers:** `wrangler.toml`. Lazada checks should fit the free plan. Web research reads large streams and will probably exceed the free plan's 10 ms of CPU; on Workers Paid add `[limits] cpu_ms = 30000`.
-   - After deploying, run one Lazada check first. If it answers `marketplace_blocked`, Lazada is refusing Cloudflare's servers: use Render instead.
+   - **Cloudflare Workers:** `wrangler.toml` (deployed as `anthropic-price-service`, with the `DB` binding to anthropic-ce's `ce-data`). Past costings and the Haiku quick check are light; web research on Opus reads larger streams and may exceed the free plan's 10 ms of CPU (on Workers Paid add `[limits] cpu_ms = 30000`).
+   - If you deploy from the dashboard rather than `wrangler deploy`, add the D1 binding there: Settings > Bindings > D1 database, variable name `DB`, database `ce-data`.
 2. **Set the settings:** `ANTHROPIC_API_KEY` as a secret, `REQUIRE_LARK_LOGIN` true, and `ALLOWED_ORIGINS` set to the hosted page's origin.
 3. **Deploy the service first, then the page.** Add the service's address to `SERVICES.price.urls` and to the CSP's `connect-src` in `index.html`.
 4. **Check it:** `GET /` answers with `service: "price-research"` and the new version. Then raise `SERVICES.price.min` in the page.
@@ -165,6 +167,8 @@ npm start                # http://127.0.0.1:8003
 
 ## Cost
 
-**Lazada checks:** tokens only on Haiku 5.5 (US$0.10 / US$0.50 per million). Measured on Nov 24, 2026: about 5,000 tokens in and 2,200 to 5,800 out, so US$0.0016 to US$0.0034 a check (see the page's README for the test set).
+**Past costings:** free (one D1 query; D1's free plan allows 5 million reads a day).
+
+**Quick web check:** up to 3 searches (US$0.03) plus Haiku tokens. To be measured.
 
 **Web research:** web search is US$10 per 1,000 searches, plus tokens. Web fetch and the filtering code cost only tokens. Each report's `meta.cost_usd` says what it cost (`src/cost.js` holds the prices), and the log line for each run has the tokens and the total.

@@ -1,7 +1,8 @@
 # Cloudflare Workers: runs src/worker.js (which runs src/service.js, the same code Node runs).
-# Not deployed yet: the demo runs on 127.0.0.1. Deploy with `npx wrangler deploy`.
-# Lazada checks (source "marketplace") fit the free plan: a few ms of CPU per check. Web research
-# reads large streams and will probably exceed the free plan's 10 ms; on Workers Paid, add
+# Deployed as "anthropic-price-service" (https://anthropic-price-service.stephen-lin.workers.dev):
+#   npx wrangler deploy
+# The Quick web check (Haiku) and past costings are meant to fit the free plan's 10 ms of CPU.
+# Web research on Opus or Sonnet reads larger streams; if it hits the limit on Workers Paid, add
 #   [limits]
 #   cpu_ms = 30000
 #
@@ -9,10 +10,17 @@
 #   ANTHROPIC_API_KEY    as a secret (required)
 #   ALLOWED_ORIGINS      the hosted page's origin (never *)
 #   (REQUIRE_LARK_LOGIN stays on; LARK_BASE_TOKEN / LARK_TABLE_ID default to the procurement table)
-name = "price-research"
+name = "anthropic-price-service"
 main = "src/worker.js"
 compatibility_date = "2026-05-01"
 keep_vars = true
+
+# Past costings: anthropic-ce's CE line items (read only). The same database anthropic-ce uses for
+# Suppliers' Line Items tab; uploaded from tech/anthropic-ce after each CE pipeline run.
+[[d1_databases]]
+binding = "DB"
+database_name = "ce-data"
+database_id = "fc855676-806a-4e1a-bfe1-5041759e71aa"
 
 [[rules]]
 type = "Text"

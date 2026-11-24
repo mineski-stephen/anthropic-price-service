@@ -72,7 +72,7 @@ export function cleanSupplier(s = {}) {
 }
 
 /** Build the report. raw: submit_report's input; ev: collectEvidence(); run: the run loop's result. */
-export function buildReport({ input, raw = {}, ev, run, id, createdAt, service, startedAt }) {
+export function buildReport({ input, raw = {}, ev, run, id, createdAt, service, startedAt, costings = null }) {
   const market = MARKETS[input.market];
   const ix = index(ev);
   const seen = new Set();
@@ -118,13 +118,14 @@ export function buildReport({ input, raw = {}, ev, run, id, createdAt, service, 
     warnings,
     listings,
     suppliers,
+    costings,
     sources: {
       queries: ev.queries.slice(0, 40).map((q) => ({ query: str(q.query, 200), results: q.results, error: q.error })),
       pages: ev.pages.slice(0, MAX_PAGES).map((p) => ({ url: webUrl(p.url), host: p.host, title: str(p.title, 200), page_age: str(p.page_age, 40),
         searched: p.searched, fetched: p.fetched, retrieved_at: str(p.retrieved_at, 40), error: p.error })).filter((p) => p.url),
     },
     meta: {
-      service: service.name, version: service.version, runtime: service.runtime,
+      service: service.name, version: service.version, runtime: service.runtime, source: "web",
       model: input.model, models_used: usedModels, fallback: usedModels.some((m) => m && !m.startsWith(input.model)),
       effort: DEPTHS[input.depth].effort, depth: input.depth, duration_ms: Date.now() - startedAt,
       requests: run.requests, continuations: run.continuations, ended: run.ended,
