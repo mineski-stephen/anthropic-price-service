@@ -13,16 +13,19 @@
  *
  * Where it runs (same code; GET / says which answered in "runtime")
  *   Node        server.js: on this computer for the demo (127.0.0.1:8003), or Render (Docker).
- *   Cloudflare  src/worker.js (wrangler.toml). Needs Workers Paid: reading a research stream takes
- *               more than the free plan's 10 ms of CPU.
+ *   Cloudflare  src/worker.js (wrangler.toml). Marketplace checks fit the free plan (a few ms of
+ *               CPU). Web research reads large streams and probably needs Workers Paid.
  *
  * Endpoints
  *   GET  /           version, runtime, models, depths, limits, CORS headers. Open to any origin,
  *                    never cached; the page calls it to wake and check the service.
  *   GET  /health     {"status":"ok"}
  *   POST /research   Authorization: Bearer <Lark user_access_token> (unless REQUIRE_LARK_LOGIN=false)
- *                    JSON: { kind, name, details, quantity, unit, market, city, condition, depth,
- *                            suppliers, model, sites: { mode: "only"|"skip"|"none", list } }
+ *                    JSON: { source: "marketplace"|"web", kind, name, details, quantity, unit, market,
+ *                            city, condition, depth, suppliers, model, sites: { mode, list } }
+ *                    source "marketplace" (market.js): Lazada's own listings, sorted by Claude
+ *                    Haiku 5.5, about US$0.002 a check, a few seconds. "web" (the default): research
+ *                    with web search on the chosen model, US$0.15-3, one to four minutes.
  *                    -> 200 application/x-ndjson (see ndjson.js), or a JSON error before streaming.
  *   OPTIONS *        CORS preflight
  *
@@ -35,14 +38,16 @@ import { runResearch, RunError, ESTIMATE_MS, caps } from "./research.js";
 import { collectEvidence } from "./evidence.js";
 import { buildReport } from "./report.js";
 import { createWriter, CONTENT_TYPE } from "./ndjson.js";
+import { runMarket, MarketError, MARKET_MODEL } from "./market.js";
 
 export const SERVICE = "price-research";
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.1";
 export const API_VERSION = 1;
 export const ALLOW_HEADERS = ["Content-Type", "Authorization"];
 export const KEY_ENV_NAMES = ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"];
 const MAX_BODY = 16384;
 const PING_MS = 15000;
+const MARKET_ESTIMATE_MS = 15000;
 
 const cleanKey = (v) => String(v || "").trim().replace(/^["']+|["']+$/g, "").trim();
 const str = (env, name, def = "") => (typeof env[name] === "string" ? env[name] : def);
@@ -82,6 +87,9 @@ export function loadKey(env = {}, files = {}) {
  *   MAX_OUTPUT_TOKENS     default 64000
  *   RATE_LIMIT_PER_HOUR   runs per person (default 10; per copy on Workers)
  *   MAX_CONCURRENT        runs at once (default 2)
+ *   MARKET_MODEL          the model that sorts marketplace listings (default claude-haiku-5-5)
+ *   MARKET_RATE_LIMIT_PER_HOUR  marketplace checks per person (default 60)
+ *   MARKET_THINKING       true (default): the sorting model thinks first; false: it answers at once
  *   REQUEST_TIMEOUT       seconds per Anthropic request (default 300)
  *   RUN_TIMEOUT           seconds per run (default 480)
  *   TZ_OFFSET_HOURS       for "today's date" and log times (default 8, Manila)
@@ -105,6 +113,9 @@ export function readConfig(env = {}, { runtime = "node", secretFiles = {} } = {}
     origins: origins.size ? origins : new Set(["http://127.0.0.1:9128"]),
     rateLimitPerHour: int(env, "RATE_LIMIT_PER_HOUR", 10),
     maxConcurrent: Math.max(1, int(env, "MAX_CONCURRENT", 2)),
+    marketModel: MODELS[str(env, "MARKET_MODEL", "").trim()] ? str(env, "MARKET_MODEL", "").trim() : MARKET_MODEL,
+    marketRateLimitPerHour: int(env, "MARKET_RATE_LIMIT_PER_HOUR", 60),
+    marketThinking: truthy(str(env, "MARKET_THINKING", "true")),
     requestTimeoutMs: Math.max(30, int(env, "REQUEST_TIMEOUT", 300)) * 1000,
     runTimeoutMs: Math.max(60, int(env, "RUN_TIMEOUT", 480)) * 1000,
     tzOffsetHours: dec(env, "TZ_OFFSET_HOURS", 8),
@@ -185,6 +196,7 @@ export function createService(env = {}, { prompt, fetch: upstream = (...a) => gl
   cfg.problems.forEach((p) => log(`config problem: ${p}`));
   const auth = new LarkAuth(cfg.lark);
   const limiter = new RateLimiter(cfg.rateLimitPerHour);
+  const marketLimiter = new RateLimiter(cfg.marketRateLimitPerHour);
   const slots = new Slots(cfg.maxConcurrent);
   const openCors = cfg.origins.has("*");
   const service = { name: SERVICE, version: VERSION, runtime };
@@ -210,10 +222,12 @@ export function createService(env = {}, { prompt, fetch: upstream = (...a) => gl
       markets: Object.entries(MARKETS).map(([id, m]) => ({ id, name: m.name, currency: m.currency })),
       refusal_fallback: cfg.fallback ? "default" : "off",
       endpoints: ["GET /", "GET /health", "POST /research"],
-      features: ["web-search", "checked-prices", "suppliers", "ndjson-progress"],
+      features: ["web-search", "checked-prices", "suppliers", "ndjson-progress", "marketplace"],
+      marketplace: { site: "Lazada", markets: ["PH", "SG", "MY"], model: cfg.marketModel },
       cors: { origins: openCors ? "*" : [...cfg.origins].sort(), allow_headers: [...ALLOW_HEADERS] },
       login: { provider: "lark", required: cfg.lark.required },
-      limits: { max_run_usd: cfg.maxRunUsd, rate_limit_per_hour: cfg.rateLimitPerHour, max_concurrent: cfg.maxConcurrent,
+      limits: { max_run_usd: cfg.maxRunUsd, rate_limit_per_hour: cfg.rateLimitPerHour, market_rate_limit_per_hour: cfg.marketRateLimitPerHour,
+        max_concurrent: cfg.maxConcurrent,
         run_timeout_s: Math.round(cfg.runTimeoutMs / 1000), max_body_bytes: MAX_BODY, ...LIMITS },
     };
   }
@@ -243,11 +257,11 @@ export function createService(env = {}, { prompt, fetch: upstream = (...a) => gl
       throw new ApiError(400, "bad_request", "The request couldn't be read.");
     }
     let input;
-    try { input = readInput(raw, { models: cfg.models, defaultModel: cfg.defaultModel }); } catch (e) {
+    try { input = readInput(raw, { models: cfg.models, defaultModel: cfg.defaultModel, marketModel: cfg.marketModel }); } catch (e) {
       if (e instanceof InputError) throw new ApiError(400, "bad_input", e.message);
       throw e;
     }
-    const wait = limiter.check(user && user.open_id ? `user:${user.open_id}` : `ip:${ip}`);
+    const wait = (input.source === "marketplace" ? marketLimiter : limiter).check(user && user.open_id ? `user:${user.open_id}` : `ip:${ip}`);
     if (wait) throw new ApiError(429, "rate_limited", `You've run a lot of price checks in the last hour. Try again in ${Math.ceil(wait / 60)} min.`, { "Retry-After": String(wait) });
     if (!slots.take()) throw new ApiError(503, "busy", "The service is busy with other price checks. Try again in a minute.", { "Retry-After": "30" });
     return { input, user };
@@ -267,7 +281,17 @@ export function createService(env = {}, { prompt, fetch: upstream = (...a) => gl
     const pump = (async () => {
       const ping = setInterval(() => { out.line({ type: "ping" }); }, PING_MS);
       try {
-        await out.line({ type: "start", id, model: input.model, depth: input.depth, caps: { searches: lim.searches, fetches: lim.fetches },
+        if (input.source === "marketplace") {
+          await out.line({ type: "start", id, source: "marketplace", model: input.model, estimate_ms: MARKET_ESTIMATE_MS });
+          const report = await runMarket({ client: new Client(cfg.apiKey, { fetch: upstream }), input, today: today(cfg.tzOffsetHours), fetch: upstream,
+            signal: runSignal, emit: (obj) => { out.line(obj); }, log, model: input.model, id, service, startedAt: started, thinking: cfg.marketThinking });
+          await out.line({ type: "report", report });
+          const m = report.meta;
+          log(`market 200${who} id=${id} market=${input.market} ms=${m.duration_ms} seen=${m.listings_seen} kept=${report.listings.length} ` +
+            `ended=${m.ended} in=${m.usage.input_tokens} out=${m.usage.output_tokens} usd=${m.cost_usd.total}`);
+          return;
+        }
+        await out.line({ type: "start", id, source: "web", model: input.model, depth: input.depth, caps: { searches: lim.searches, fetches: lim.fetches },
           estimate_ms: ESTIMATE_MS[input.depth], max_run_usd: cfg.maxRunUsd });
         const client = new Client(cfg.apiKey, { fetch: upstream, betas: cfg.fallback && MODELS[input.model].fallback ? [FALLBACK_BETA] : [] });
         const { report: raw, run } = await runResearch({ client, input, system: prompt, today: today(cfg.tzOffsetHours), cfg,
@@ -284,12 +308,12 @@ export function createService(env = {}, { prompt, fetch: upstream = (...a) => gl
           `suppliers=${report.suppliers.length} ended=${m.ended} in=${m.usage.input_tokens} out=${m.usage.output_tokens} ` +
           `cache_read=${m.usage.cache_read_input_tokens} usd=${m.cost_usd.total}`);
       } catch (e) {
-        const err = e instanceof RunError ? { code: e.code, message: e.message }
+        const err = e instanceof RunError || e instanceof MarketError ? { code: e.code, message: e.message }
           : e instanceof ClaudeError ? describeClaudeError(e)
           : { code: "internal", message: "Something went wrong on the server. Try again." };
         if (e instanceof ClaudeError) log(`claude error kind=${e.kind} status=${e.status}: ${String(e.message).slice(0, 300)}`);
-        else if (!(e instanceof RunError)) log(`research internal ${(e && e.name) || "Error"}: ${(e && e.stack) || e}`);
-        log(`research ${err.code}${who} id=${id} model=${input.model} depth=${input.depth} ms=${Date.now() - started}`);
+        else if (!(e instanceof RunError) && !(e instanceof MarketError)) log(`research internal ${(e && e.name) || "Error"}: ${(e && e.stack) || e}`);
+        log(`${input.source === "marketplace" ? "market" : "research"} ${err.code}${who} id=${id} model=${input.model} depth=${input.depth} ms=${Date.now() - started}`);
         await out.line({ type: "error", error: err });
       } finally {
         clearInterval(ping);

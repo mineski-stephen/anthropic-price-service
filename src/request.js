@@ -47,6 +47,8 @@ export const SELLER_TYPES = ["official_store", "retailer", "marketplace_seller",
 export const SUPPLIER_TYPES = ["manufacturer", "distributor", "retailer", "service_provider", "rental", "marketplace_seller", "other"];
 export const CURRENCIES = ["PHP", "USD", "SGD", "MYR", "GBP", "OTHER"];
 
+export const MARKETPLACE_MARKETS = ["PH", "SG", "MY"];   // where Lazada sells (market.js)
+
 export const LIMITS = { name: 200, details: 1000, unit: 40, city: 80, sites: 20, quantity: 10000000 };
 
 export class InputError extends Error {}
@@ -69,7 +71,7 @@ export function cleanDomains(items) {
 }
 
 /** The page's request, checked. Throws InputError with a sentence the page can show. */
-export function readInput(raw = {}, { models = Object.keys(MODELS), defaultModel = DEFAULT_MODEL } = {}) {
+export function readInput(raw = {}, { models = Object.keys(MODELS), defaultModel = DEFAULT_MODEL, marketModel = "claude-haiku-5-5" } = {}) {
   if (!raw || typeof raw !== "object") throw new InputError("The request couldn't be read.");
   const kind = raw.kind === "service" ? "service" : "item";
   const name = text(raw.name, LIMITS.name);
@@ -77,9 +79,12 @@ export function readInput(raw = {}, { models = Object.keys(MODELS), defaultModel
   const quantity = Number(raw.quantity);
   const market = MARKETS[String(raw.market || "PH").toUpperCase()] ? String(raw.market || "PH").toUpperCase() : null;
   if (!market) throw new InputError("Pick a market from the list.");
+  // "marketplace": Lazada's listings sorted by Claude Haiku (market.js); "web": research with web search.
+  const source = raw.source === "marketplace" ? "marketplace" : "web";
+  if (source === "marketplace" && !MARKETPLACE_MARKETS.includes(market)) throw new InputError("Lazada prices are only for the Philippines, Singapore and Malaysia. Use Web research for other markets.");
   const depth = DEPTHS[raw.depth] ? raw.depth : "standard";
-  const model = raw.model ? String(raw.model) : defaultModel;
-  if (!models.includes(model) || !MODELS[model]) throw new InputError("That model isn't available on this service.");
+  const model = source === "marketplace" ? marketModel : raw.model ? String(raw.model) : defaultModel;
+  if (source === "web" && (!models.includes(model) || !MODELS[model])) throw new InputError("That model isn't available on this service.");
   const sites = raw.sites && typeof raw.sites === "object" ? raw.sites : {};
   const mode = ["only", "skip"].includes(sites.mode) ? sites.mode : "none";
   const domains = mode === "none" ? { list: [], rejected: [] } : cleanDomains(sites.list);
@@ -87,6 +92,7 @@ export function readInput(raw = {}, { models = Object.keys(MODELS), defaultModel
   if (domains.list.length > LIMITS.sites) throw new InputError(`List at most ${LIMITS.sites} sites.`);
   if (mode === "only" && !domains.list.length) throw new InputError("Add at least one site to search, or choose “Any site”.");
   return {
+    source,
     kind,
     name,
     details: text(raw.details, LIMITS.details),
