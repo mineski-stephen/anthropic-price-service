@@ -41,7 +41,7 @@ import { createWriter, CONTENT_TYPE } from "./ndjson.js";
 import { runMarket, MarketError, MARKET_MODEL } from "./market.js";
 
 export const SERVICE = "price-research";
-export const VERSION = "0.2.1";
+export const VERSION = "0.2.3";
 export const API_VERSION = 1;
 export const ALLOW_HEADERS = ["Content-Type", "Authorization"];
 export const KEY_ENV_NAMES = ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"];
@@ -50,7 +50,14 @@ const PING_MS = 15000;
 const MARKET_ESTIMATE_MS = 15000;
 
 const cleanKey = (v) => String(v || "").trim().replace(/^["']+|["']+$/g, "").trim();
-const str = (env, name, def = "") => (typeof env[name] === "string" ? env[name] : def);
+/* A setting as text. Workers hands over JSON-typed variables as booleans and numbers, and people
+   paste values with quotes ("false"): both are read as the plain text they mean. */
+const str = (env, name, def = "") => {
+  const v = env[name];
+  if (typeof v === "boolean" || (typeof v === "number" && Number.isFinite(v))) return String(v);
+  if (typeof v !== "string") return def;
+  return v.trim().replace(/^(["'])(.*)\1$/, "$2");
+};
 function int(env, name, def) {
   const raw = str(env, name, "").trim();
   return /^-?\d+$/.test(raw) ? parseInt(raw, 10) : def;

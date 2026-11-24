@@ -210,6 +210,36 @@ test("Lazada refusing the server is a plain error, and nothing is sent to Anthro
   assert.equal(w.bodies.length, 0);
 });
 
+test("refused at first, Lazada is warmed up like a browser: cookies from every redirect, then the data", async () => {
+  const seen = [];
+  const lazada = (url, init) => {
+    const cookie = new Headers(init.headers).get("Cookie") || "";
+    seen.push({ url, cookie, redirect: init.redirect });
+    if (url.includes("ajax=true")) {
+      return cookie.includes("hng=PH") && cookie.includes("sig=ok")
+        ? new Response(JSON.stringify(LAZADA_JSON), { status: 200 })
+        : new Response("<html><title>Slide to verify</title>punish</html>", { status: 200, headers: { "Content-Type": "text/html" } });
+    }
+    if (url.includes("/catalog/?q=")) {
+      const h = new Headers({ Location: "/landing/?q=Plastic+chair" });
+      h.append("Set-Cookie", "hng=PH|en-PH|PHP|608; Path=/; Domain=.lazada.com.ph");
+      return new Response("", { status: 302, headers: h });
+    }
+    const h = new Headers({ "Content-Type": "text/html" });
+    h.append("Set-Cookie", "sig=ok; Path=/");
+    return new Response("<html>search page</html>", { status: 200, headers: h });
+  };
+  const w = world({ lazada });
+  const r = await w.post();
+  assert.equal(r.last.type, "report");
+  assert.equal(r.last.report.listings.length, 3);
+  assert.equal(seen.length, 4);                                   // data, page, redirected page, data again
+  assert.equal(seen[1].redirect, "manual");
+  assert.match(seen[3].cookie, /hng=PH\|en-PH\|PHP\|608; sig=ok/);
+  assert.ok(w.logs.some((l) => /lazada refused the data request: HTTP 200 text\/html .*title="Slide to verify" \(a bot check\)/.test(l)));
+  assert.ok(w.logs.some((l) => /lazada answered after the warm-up \(cookies: hng,sig\)/.test(l)));
+});
+
 test("if Claude fails, the listings still come back unsorted; a refused key stops it", async () => {
   const down = () => new Response(JSON.stringify({ error: { type: "api_error", message: "boom" } }), { status: 500 });
   const r = await world({ answers: [down] }).post();

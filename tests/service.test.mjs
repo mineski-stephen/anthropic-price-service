@@ -67,6 +67,16 @@ test("GET / reports the service, version, models, depths and allowed headers, ne
   assert.ok(!JSON.stringify(info).includes(ENV.ANTHROPIC_API_KEY));
 });
 
+test("settings given as JSON values or in quotes read as the text they mean", () => {
+  const base = { ANTHROPIC_API_KEY: "sk-ant-test-0123456789" };
+  assert.equal(readConfig({ ...base, REQUIRE_LARK_LOGIN: false }).lark.required, false);
+  assert.equal(readConfig({ ...base, REQUIRE_LARK_LOGIN: '"false"' }).lark.required, false);
+  assert.equal(readConfig({ ...base, REQUIRE_LARK_LOGIN: " 'off' " }).lark.required, false);
+  assert.equal(readConfig({ ...base, REQUIRE_LARK_LOGIN: true }).lark.required, true);
+  assert.equal(readConfig({ ...base, RATE_LIMIT_PER_HOUR: 2 }).rateLimitPerHour, 2);
+  assert.equal(readConfig({ ...base, MAX_RUN_USD: "0.5" }).maxRunUsd, 0.5);
+});
+
 test("settings: a missing key makes every route answer 503; login is on unless switched off", async () => {
   const res = await world({ env: { ANTHROPIC_API_KEY: "" } }).handle(new Request("http://svc/"));
   assert.equal(res.status, 503);

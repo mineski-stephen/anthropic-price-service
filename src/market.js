@@ -93,39 +93,90 @@ export class MarketError extends Error {
   constructor(code, message) { super(message); this.code = code; }
 }
 
-/** GET Lazada's search data. Resolves { listings, total, url }; throws MarketError or RunError("cancelled"). */
-export async function fetchLazada({ fetch: f, market, query, signal = null }) {
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36";
+
+/** The cookies a response sets, as name -> value (Workers and Node 20 both have getSetCookie). */
+export function cookiesFrom(res, jar = new Map()) {
+  const h = res && res.headers;
+  if (!h) return jar;
+  const list = typeof h.getSetCookie === "function" ? h.getSetCookie() : (h.get("set-cookie") ? h.get("set-cookie").split(/,(?=\s*[A-Za-z0-9_.-]+=)/) : []);
+  for (const c of list) {
+    const m = String(c).match(/^\s*([^=;\s]+)=([^;]*)/);
+    if (m) jar.set(m[1], m[2]);
+  }
+  return jar;
+}
+const cookieHeader = (jar) => [...jar].map(([k, v]) => `${k}=${v}`).join("; ");
+
+/** What came back instead of listings, in a few words for the log (no cookies, no page text beyond a hint). */
+export function describeAnswer(res, text) {
+  const type = (res.headers.get("content-type") || "").split(";")[0];
+  const title = (String(text).match(/<title[^>]*>([^<]{0,80})/i) || [])[1] || "";
+  const hint = /punish|captcha|slide to verify|x5sec|baxia/i.test(text) ? " (a bot check)" : "";
+  return `HTTP ${res.status} ${type || "?"} ${text.length} bytes${title ? ` title="${title.trim()}"` : ""}${hint}`;
+}
+
+/**
+ * GET Lazada's search data. Resolves { listings, total, url, warmed }; throws MarketError or
+ * RunError("cancelled").
+ *
+ * Lazada may answer a server's first request with a bot check instead of data. Then it's tried
+ * once more the way a browser does it: open the ordinary search page first (following redirects
+ * by hand, keeping every cookie Lazada sets), then ask for the data with those cookies.
+ * log() gets one line saying what Lazada sent when it refused.
+ */
+export async function fetchLazada({ fetch: f, market, query, signal = null, log = () => {} }) {
   const url = searchUrl(market, query);
   if (!url) throw new MarketError("market_unsupported", "Lazada prices are only for the Philippines, Singapore and Malaysia.");
+  const page = searchUrl(market, query, { ajax: false });
   const timeout = AbortSignal.timeout(FETCH_TIMEOUT_MS);
   const all = signal ? AbortSignal.any([signal, timeout]) : timeout;
-  let res;
-  try {
-    res = await f(url, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36",
-        Accept: "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        Referer: searchUrl(market, query, { ajax: false }),
-      },
-      signal: all,
-      redirect: "follow",
-    });
-  } catch (e) {
-    if (signal && signal.aborted) throw new RunError("cancelled", "Cancelled.");
-    if (timeout.aborted) throw new MarketError("marketplace_timeout", "Lazada didn't answer in time. Try again in a minute.");
-    throw new MarketError("marketplace_unreachable", "Lazada couldn't be reached. Try again in a minute.");
+  const jar = new Map();
+  const get = async (u, accept, referer, redirect = "follow") => {
+    const headers = { "User-Agent": UA, Accept: accept, "Accept-Language": "en-US,en;q=0.9" };
+    if (referer) headers.Referer = referer;
+    if (jar.size) headers.Cookie = cookieHeader(jar);
+    try {
+      const res = await f(u, { headers, signal: all, redirect });
+      cookiesFrom(res, jar);
+      return res;
+    } catch (e) {
+      if (signal && signal.aborted) throw new RunError("cancelled", "Cancelled.");
+      if (timeout.aborted) throw new MarketError("marketplace_timeout", "Lazada didn't answer in time. Try again in a minute.");
+      throw new MarketError("marketplace_unreachable", "Lazada couldn't be reached. Try again in a minute.");
+    }
+  };
+  const read = async (res) => {
+    const text = await res.text().catch(() => "");
+    let json = null;
+    if (res.ok && text.length <= MAX_JSON_BYTES && /^\s*\{/.test(text)) {
+      try { json = JSON.parse(text); } catch (_) { json = null; }
+    }
+    return { json: json && json.mods ? json : null, text };
+  };
+  const done = (json, warmed) => ({ listings: readListings(json, market), total: num(json.mainInfo && json.mainInfo.totalResults), url: page, warmed });
+
+  const DATA = "application/json, text/plain, */*";
+  const HTML = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
+  let res = await get(url, DATA, page);
+  let got = await read(res);
+  if (got.json) return done(got.json, false);
+  log(`lazada refused the data request: ${describeAnswer(res, got.text)}`);
+
+  // The warm-up: the ordinary page, redirects followed by hand so each hop's cookies are kept.
+  let at = page;
+  for (let hop = 0; hop < 4; hop++) {
+    const r = await get(at, HTML, hop ? page : `${LAZADA[market]}/`, "manual");
+    const next = r.headers.get("location");
+    await r.text().catch(() => "");
+    if (!(r.status >= 300 && r.status < 400 && next)) break;
+    at = new URL(next, at).href;
   }
-  const text = await res.text().catch(() => "");
-  let json = null;
-  if (res.ok && text.length <= MAX_JSON_BYTES && /^\s*\{/.test(text)) {
-    try { json = JSON.parse(text); } catch (_) { json = null; }
-  }
-  if (!json || !json.mods) {
-    throw new MarketError("marketplace_blocked", `Lazada didn't send its listings (HTTP ${res.status}). It may be refusing this server for now. Try again later, or use Web research.`);
-  }
-  const total = num(json.mainInfo && json.mainInfo.totalResults);
-  return { listings: readListings(json, market), total, url: searchUrl(market, query, { ajax: false }) };
+  res = await get(url, DATA, page);
+  got = await read(res);
+  if (got.json) { log(`lazada answered after the warm-up (cookies: ${[...jar.keys()].join(",") || "none"})`); return done(got.json, true); }
+  log(`lazada refused after the warm-up: ${describeAnswer(res, got.text)} cookies=${[...jar.keys()].join(",") || "none"}`);
+  throw new MarketError("marketplace_blocked", `Lazada didn't send its listings (HTTP ${res.status}). It may be refusing this server for now. Try again later, or use Web research.`);
 }
 
 // ---- sorting with Claude ---------------------------------------------------------------------
@@ -300,7 +351,7 @@ export function buildMarketReport({ input, listings, total, searchPage, sorted, 
 export async function runMarket({ client, input, today, fetch: f, signal, emit = () => {}, log = () => {}, model = MARKET_MODEL,
   id, service, startedAt = Date.now(), requestTimeoutMs = 60000, thinking = true }) {
   emit({ type: "activity", kind: "market_search", site: "Lazada", query: input.name });
-  const { listings, total, url } = await fetchLazada({ fetch: f, market: input.market, query: input.name, signal });
+  const { listings, total, url } = await fetchLazada({ fetch: f, market: input.market, query: input.name, signal, log });
   emit({ type: "activity", kind: "market_results", site: "Lazada", count: listings.length });
   const tally = createTally();
   let sorted = null;

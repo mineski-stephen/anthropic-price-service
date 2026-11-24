@@ -2,6 +2,15 @@
 
 Newest first. Each entry's number is `VERSION` in `src/service.js` and `version` in `package.json`.
 
+## 0.2.3 · Nov 24, 2026
+
+- Lazada warm-up: when Lazada answers the data request with a bot check (as it did for the Cloudflare Worker), the service opens the ordinary search page first like a browser, following redirects by hand and keeping every cookie Lazada sets (`hng`, `hng.sig`), then asks for the data again with them. Tried once per check.
+- The log says what Lazada sent when it refused (status, type, size, page title, whether it looks like a bot check) and whether the warm-up worked, without page text or cookie values.
+
+## 0.2.2 · Nov 24, 2026
+
+- Settings given as JSON values (Cloudflare's "JSON" variable type hands over `false`, `2`) or wrapped in quotes (`"false"`) are now read as the text they mean. Before, they were ignored and the default used: `REQUIRE_LARK_LOGIN` set to JSON `false` left login on.
+
 ## 0.2.1 · Nov 24, 2026
 
 - After the first live Lazada checks: where Claude's summary, notes or warnings name a listing by its number ("Listing 22"), the product's name is put in its place, since the reader never sees the numbers. The prompt now asks for names and at most three warnings, and the service keeps at most four.
