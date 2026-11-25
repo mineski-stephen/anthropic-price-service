@@ -2,6 +2,17 @@
 
 Newest first. Each entry's number is `VERSION` in `src/service.js` and `version` in `package.json`.
 
+## 0.5.0 · Nov 25, 2026
+
+- **Past purchase requests:** the service also searches the Lark Procurement table (the table the login check already uses) for approved requests that mention the item, as the signed-in person (`src/pos.js`). It reads only the item, quantity, unit price, currency, total, supplier, project, request number, status and dates, never the supplier bank details. Newest first, up to 30 lines. If Lark refuses the filter, it's tried once without the status condition.
+- **Mineski's records as Claude's reference:** a web check now looks up past purchases and CE lines first, and gives Claude a short summary (prices paid with suppliers, the middle budgeted cost, no client names). Claude is asked to check those suppliers first, never to report the internal figures as listings, and to say in the summary how today's market compares; a difference over 30% goes in warnings. The prompt has a new "Mineski's own records" section.
+- `report.costings` gains `pos`, `pos_available`, `pos_reason`, `ce_available` and `ce_reason`; it's available when either source answers. A past-costings check lists purchase requests (`verification.via: "po"`) before CE lines; they count toward the price only for piece-like units, since requests record no unit.
+- The stream's `costings` activity adds `pos` (the count). `start` now always comes first.
+
+## 0.4.1 · Nov 24, 2026
+
+- The `check` depth's time estimate is now 32 seconds, as measured on the Worker (was 45).
+
 ## 0.4.0 · Nov 24, 2026
 
 - New depth **`check`** for the page's Quick web check on Haiku: medium effort, 3 searches, **5 page reads** of 4,000 tokens each, its own US$0.15 cap. The request asks Claude to open the most useful offers' pages before reporting, suggests Philippine retailers that publish prices (for items in the Philippines), and skips Lazada, Shopee, Carousell and social sites (`SKIP_SITES`) unless the person chose their own site list.

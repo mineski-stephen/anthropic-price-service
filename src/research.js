@@ -25,7 +25,7 @@ export class RunError extends Error {
 }
 
 /** Typical run length per depth, before the page has timings of its own (ms). */
-export const ESTIMATE_MS = { check: 45000, quick: 60000, standard: 120000, thorough: 240000 };
+export const ESTIMATE_MS = { check: 32000, quick: 60000, standard: 120000, thorough: 240000 };
 
 export const caps = (input) => {
   const d = DEPTHS[input.depth];
@@ -56,11 +56,11 @@ export function progress(ev, block, emit) {
 }
 
 /** Run the research. Resolves { report (submit_report's input), run }; throws RunError or ClaudeError. */
-export async function runResearch({ client, input, system, today, cfg, signal = null, emit = () => {}, log = () => {}, onResponse = null }) {
+export async function runResearch({ client, input, system, today, cfg, signal = null, emit = () => {}, log = () => {}, onResponse = null, reference = "" }) {
   const cap = Math.min(cfg.maxRunUsd, DEPTHS[input.depth].maxUsd || Infinity);   // a depth may have its own, lower cap
   const tools = buildTools(input);
   const limits = caps(input);
-  const messages = [{ role: "user", content: [{ type: "text", text: userText(input, today) }] }];
+  const messages = [{ role: "user", content: [{ type: "text", text: userText(input, today, reference) }] }];
   const run = { requests: 0, continuations: 0, models: [], blocks: [], ended: "", container: null, nudged: false, wrapped: false,
     retried: false, tally: createTally() };
   const deadline = Date.now() + cfg.runTimeoutMs;

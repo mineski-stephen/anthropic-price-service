@@ -1,6 +1,6 @@
 {
   "name": "price-research",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "The price check demo's service: prices an item from Lazada's listings sorted by Claude Haiku, or researches it with Claude and web search, then checks every listing against the pages it read. Node (server.js) and Cloudflare Workers (src/worker.js).",
   "type": "module",

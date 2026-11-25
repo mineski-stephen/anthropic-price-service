@@ -102,7 +102,7 @@ test("a past-costings report: listings from the CE lines, internal-use warning, 
   assert.ok(r.warnings.some((w) => /don't share them with clients/.test(w.text)));
   const none = costingsReport({ input, costings: { available: true, terms: ["zzz"], lines: [] }, id: "r2", createdAt: "x",
     service: { name: "p", version: "x", runtime: "node" }, startedAt: Date.now() });
-  assert.ok(none.warnings.some((w) => /No past CE line mentions “zzz”/.test(w.text)));
+  assert.ok(none.warnings.some((w) => /No past CE line or approved purchase request mentions “zzz”/.test(w.text)));
 });
 
 test("Haiku gets the plain search tools; Opus and Sonnet the filtering ones", () => {
@@ -151,8 +151,10 @@ test("past costings are refused when the login check is off, or there's no datab
   assert.equal(off.last.type, "error");
   assert.equal(off.last.error.code, "costings_unavailable");
   assert.match(off.last.error.message, /Lark login/);
+  // Without the database, approved purchase requests (Lark) still answer.
   const nodb = await world({ db: null }).post({ source: "costings", name: "Monoblock chair" });
-  assert.match(nodb.last.error.message, /only on the Cloudflare copy/);
+  assert.equal(nodb.last.type, "report");
+  assert.equal(nodb.last.report.costings, null);
   const info = await (await world({ env: { REQUIRE_LARK_LOGIN: "false" } }).handle(new Request("http://svc/"))).json();
   assert.equal(info.costings.available, false);
 });
@@ -165,6 +167,11 @@ test("a web check carries the past costings alongside", async () => {
   assert.equal(r.last.report.costings.lines.length, 2);
   assert.ok(r.lines.some((l) => l.kind === "costings" && l.count === 2));
   assert.equal(w.bodies[0].tools[0].type, "web_search_20250305");
+  const sent = w.bodies[0].messages[0].content[0].text;
+  assert.match(sent, /Mineski's own records for this/, "the past figures go to Claude as reference");
+  assert.match(sent, /Budgeted on 1 past CE line: middle PHP 280\.00 per piece/);
+  assert.ok(!/Example Client/.test(sent), "client names stay out");
+  assert.deepEqual(r.lines.slice(0, 2).map((l) => l.kind || l.type), ["start", "costings"]);
 });
 
 test("the check depth: Haiku with 5 page reads of 4,000 tokens, marketplaces skipped, retailers suggested", async () => {

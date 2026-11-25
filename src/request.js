@@ -207,7 +207,7 @@ export function buildBody(input, { system, messages, tools = buildTools(input), 
 }
 
 /** The user turn: the request in plain words. */
-export function userText(input, today) {
+export function userText(input, today, reference = "") {
   const m = MARKETS[input.market];
   const d = DEPTHS[input.depth];
   const extra = input.suppliers ? SUPPLIER_EXTRA : { searches: 0, fetches: 0 };
@@ -231,6 +231,7 @@ export function userText(input, today) {
   lines.push(input.suppliers ? "Suppliers: also list 3 to 6 suppliers procurement could contact." : "Suppliers: not needed; leave the suppliers list empty unless a seller is clearly worth contacting.");
   if (input.sites.mode === "only") lines.push(`Only use these sites: ${input.sites.list.join(", ")}`);
   if (input.sites.mode === "skip") lines.push(`Don't use these sites: ${input.sites.list.join(", ")}`);
+  if (reference) lines.push("", reference);
   lines.push("", "When you're done, call submit_report.");
   return lines.join("\n");
 }

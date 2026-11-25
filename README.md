@@ -91,7 +91,11 @@ The report's shape is described at the top of `src/report.js`. Each listing carr
 
 **Each line:** project, client, item and description, qty × frq per unit, unit cost (budgeted), markup, client price per unit, and the price actually paid per unit where a purchase order matched (`actual_php` ÷ qty × frq).
 
-- `"source": "costings"`: the lines become the report's listings (`verification.via: "costings"`, no links), so the page works out the typical price from them. Lines in another unit than the request aren't counted, unless none match. `meta.source: "costings"`, no cost.
+**Approved purchase requests** (`src/pos.js`): the Lark Procurement table (`LARK_BASE_TOKEN` / `LARK_TABLE_ID`, the same table the login check uses), searched as the signed-in person with Lark's `records/search`: `Status is Approved` and `Particulars_Item contains <each word>`, newest first, up to 30 lines. Only these columns are read: Request No., Status, Project Code, Project Name, Particulars_Item, Particulars_Quantity, Particulars_Unit Price, Particulars_Unit Price-Currency, Particulars_Price, Supplier Details_Supplier Name, Submitted at, Completed at; never the supplier bank details. A request with several particulars gives one line per matching particular. Requests record no unit, so they count toward a price only for piece-like units (piece, set, pack, lot…).
+
+**As Claude's reference:** a web check looks both up before the research starts and adds a short summary to Claude's request: up to six prices paid (with supplier, quantity and month), the middle budgeted cost from CE lines in the requested unit, and the suppliers' names. No client names. The prompt ("Mineski's own records") says to use them only to choose where to look, spot wrong or stale listings, and compare in the summary, never as listings or quoted amounts.
+
+- `"source": "costings"`: purchase requests (`verification.via: "po"`) and CE lines become the report's listings (`verification.via: "costings"`, no links), so the page works out the typical price from them. Lines in another unit than the request aren't counted, unless none match. `meta.source: "costings"`, no cost.
 - `"source": "web"`: the search runs alongside the research, and the report carries `costings: { available, reason, terms, lines }`.
 
 The stream adds `activity` `costings` (`count`, `available`).
@@ -111,6 +115,8 @@ The page's Quick web check is `model: "claude-haiku-5-5"`, `depth: "check"`, `su
 | Instructions | open the most useful offers' pages before reporting; for items in the Philippines, prefer retailers that publish prices (`PH_RETAILERS`) |
 
 Undated listings take their search result's age, so the page leaves offers over 12 months old out of the typical price.
+
+Measured on the Worker (Nov 24, 2026, 6 cases): US$0.03-0.09 a check, 25-39 seconds, 29-43 ms of CPU, 12 of 29 listings confirmed on their own page (none with the old `quick` settings). Details in the page's README, Live tests.
 
 ## How a web research run works
 

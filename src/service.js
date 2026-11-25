@@ -38,10 +38,12 @@ import { runResearch, RunError, ESTIMATE_MS, caps } from "./research.js";
 import { collectEvidence } from "./evidence.js";
 import { buildReport } from "./report.js";
 import { createWriter, CONTENT_TYPE } from "./ndjson.js";
-import { findCostings, costingsReport } from "./costings.js";
+import { findCostings, costingsReport, referenceText, searchTerms } from "./costings.js";
+import { findPOs } from "./pos.js";
+import { bearer } from "./lark-auth.js";
 
 export const SERVICE = "price-research";
-export const VERSION = "0.4.0";
+export const VERSION = "0.5.0";
 export const API_VERSION = 1;
 export const ALLOW_HEADERS = ["Content-Type", "Authorization"];
 export const KEY_ENV_NAMES = ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"];
@@ -268,11 +270,11 @@ export function createService(env = {}, { prompt, fetch: upstream = (...a) => gl
     const wait = (input.source === "costings" ? costingsLimiter : limiter).check(user && user.open_id ? `user:${user.open_id}` : `ip:${ip}`);
     if (wait) throw new ApiError(429, "rate_limited", `You've run a lot of price checks in the last hour. Try again in ${Math.ceil(wait / 60)} min.`, { "Retry-After": String(wait) });
     if (!slots.take()) throw new ApiError(503, "busy", "The service is busy with other price checks. Try again in a minute.", { "Retry-After": "30" });
-    return { input, user };
+    return { input, user, token: cfg.lark.required ? bearer(request.headers.get("Authorization")) : "" };
   }
 
   /** Stream one run: start, progress, then the report or an error. Frees the slot at the end. */
-  function stream(input, user, { origin, signal, waitUntil }) {
+  function stream(input, user, { origin, signal, waitUntil, token = "" }) {
     const id = newId();
     const started = Date.now();
     const cancel = new AbortController();
@@ -285,12 +287,19 @@ export function createService(env = {}, { prompt, fetch: upstream = (...a) => gl
     const pump = (async () => {
       const ping = setInterval(() => { out.line({ type: "ping" }); }, PING_MS);
       try {
-        const past = () => findCostings(db, input, { loginRequired: cfg.lark.required }).then((c) => {
+        // Mineski's own prices: CE lines (D1) and approved purchase requests (Lark, as this person).
+        const past = async () => {
+          const [c, p] = await Promise.all([
+            findCostings(db, input, { loginRequired: cfg.lark.required }),
+            findPOs({ fetch: upstream, token, baseToken: cfg.lark.baseToken, tableId: cfg.lark.tableId, terms: searchTerms(input.name), signal: runSignal, log }),
+          ]);
           if (c.error) log(`costings error: ${c.error}`);
           const { error, ...rest } = c;
-          out.line({ type: "activity", kind: "costings", count: rest.lines.length, available: rest.available });
-          return rest;
-        });
+          const all = { ...rest, available: rest.available || p.available, reason: rest.available || p.available ? "" : rest.reason,
+            ce_available: rest.available, ce_reason: rest.reason, pos: p.lines, pos_available: p.available, pos_reason: p.reason };
+          out.line({ type: "activity", kind: "costings", count: rest.lines.length, pos: p.lines.length, available: all.available });
+          return all;
+        };
         if (input.source === "costings") {
           await out.line({ type: "start", id, source: "costings", estimate_ms: COSTINGS_ESTIMATE_MS });
           const costings = await past();
@@ -301,16 +310,16 @@ export function createService(env = {}, { prompt, fetch: upstream = (...a) => gl
           log(`costings 200${who} id=${id} terms=${costings.terms.join("+")} lines=${costings.lines.length} ms=${report.meta.duration_ms}`);
           return;
         }
-        const pastRun = past().catch(() => null);
         await out.line({ type: "start", id, source: "web", model: input.model, depth: input.depth, caps: { searches: lim.searches, fetches: lim.fetches },
           estimate_ms: ESTIMATE_MS[input.depth], max_run_usd: cfg.maxRunUsd });
+        const known = await past().catch(() => null);   // before the research: it's Claude's reference
         const client = new Client(cfg.apiKey, { fetch: upstream, betas: cfg.fallback && MODELS[input.model].fallback ? [FALLBACK_BETA] : [] });
         const { report: raw, run } = await runResearch({ client, input, system: prompt, today: today(cfg.tzOffsetHours), cfg,
-          signal: runSignal, emit: (obj) => { out.line(obj); }, log,
+          signal: runSignal, emit: (obj) => { out.line(obj); }, log, reference: known ? referenceText(known, input) : "",
           onResponse: record ? ({ n, body, msg }) => record(`${id}-${n}`, { input, body, response: msg }) : null });
         await out.line({ type: "activity", kind: "checking" });
         const ev = collectEvidence(run.blocks);
-        const report = buildReport({ input, raw, ev, run, id, createdAt: new Date().toISOString(), service, startedAt: started, costings: await pastRun });
+        const report = buildReport({ input, raw, ev, run, id, createdAt: new Date().toISOString(), service, startedAt: started, costings: known });
         await out.line({ type: "report", report });
         const checked = report.listings.filter((l) => l.verification.status === "checked").length;
         const m = report.meta;
@@ -372,7 +381,7 @@ export function createService(env = {}, { prompt, fetch: upstream = (...a) => gl
         log(`research 500 internal ${(e && e.name) || "Error"}: ${(e && e.message) || e}`);
         return error(new ApiError(500, "internal", "Something went wrong on the server. Try again."));
       }
-      return stream(admitted.input, admitted.user, { origin, signal, waitUntil });
+      return stream(admitted.input, admitted.user, { origin, signal, waitUntil, token: admitted.token });
     }
     if (method !== "GET" && method !== "POST") return json(405, { error: { code: "method_not_allowed", message: "Use GET or POST." } });
     return json(404, { error: { code: "not_found", message: method === "POST" ? "Use POST /research." : "Not found." } });
