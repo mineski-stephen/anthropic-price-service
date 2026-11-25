@@ -2,6 +2,13 @@
 
 Newest first. Each entry's number is `VERSION` in `src/service.js` and `version` in `package.json`.
 
+## 0.6.1 · Nov 25, 2026
+
+From the second signed-in test: two chair lines ("30 PCS MONOBLOCK CHAIR WITH BLACK COVER (NOVEMBER 4-6, 2026)", from a "Party Needs Rental" supplier) were still counted as purchases.
+
+- A hire period in the item ("(3 days)", "NOVEMBER 4-6", "Nov. 12 to 23") marks it a rental, and so does a supplier whose name says rental. One request is one hire: if any of its lines is a rental, all of them are.
+- The "costed per another unit" warning no longer counts rentals a second time.
+
 ## 0.6.0 · Nov 25, 2026
 
 From the first signed-in test (monoblock chairs ×100): every past chair line was a rental, so the past price and Claude's comparison with "what Mineski paid" were wrong.

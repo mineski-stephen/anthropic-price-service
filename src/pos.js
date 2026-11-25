@@ -14,7 +14,7 @@
  * lot's price, quantity 1). lotUnit() spots that and divides; such lines carry a `lot` note.
  */
 import { LARK_API } from "./lark-auth.js";
-import { isRental } from "./costings.js";
+import { isRental, RENTAL } from "./costings.js";
 
 export const MAX_POS = 30;
 export const PO_FIELDS = ["Request No.", "Status", "Project Code", "Project Name", "Particulars_Item", "Particulars_Quantity",
@@ -111,6 +111,8 @@ export function poLines(record, terms) {
     if (lot) { unit = lot.unit; qty = lot.quantity; }
     out.push({ ...base, item: str(r.item, 200), quantity: qty, unit_price: round2(unit), currency, total, lot: lot ? lot.lot : "", rental: isRental(r.item) });
   }
+  // One request is one hire: if the supplier is a rental company or any of its lines is a rental, all are.
+  if (out.some((o) => o.rental) || RENTAL.test(base.supplier)) for (const o of out) o.rental = true;
   return out;
 }
 

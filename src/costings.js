@@ -27,8 +27,10 @@ const STOP = new Set(["the", "and", "for", "with", "per", "pcs", "pc", "piece", 
 
 export const RENTAL = /\b(rent|rents|rental|rentals|rented|renting|hire|hired|for hire|lease|leased|leasing)\b/i;
 const PER_TIME = /\b(hour|hr|day|night|week|month)s?\b/i;
-/** Does this text describe a rental? */
-export const isRental = (text) => RENTAL.test(String(text || ""));
+// A hire period in the item: "(3 days)", "for 2 days", "(NOVEMBER 4-6, 2026)", "Nov. 12 to 23".
+const PERIOD = /\b\d+\s*days?\b|\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s*\d{1,2}\s*(-|–|to)\s*\d{1,2}\b/i;
+/** Does this text describe a rental (the words, or a hire period)? */
+export const isRental = (text) => RENTAL.test(String(text || "")) || PERIOD.test(String(text || ""));
 /** Is the request itself for a rental (the name or details say so, or it's priced per day…)? */
 export const wantsRental = (input = {}) => isRental(`${input.name || ""} ${input.details || ""}`) || PER_TIME.test(String(input.unit || ""));
 /** "rental" when the line is a rental but the request is to buy, "purchase" the other way, else "".
@@ -170,7 +172,7 @@ export function costingsReport({ input, costings, id, createdAt, service, starte
       : `${rentals} line${rentals === 1 ? " is a rental, not a purchase" : "s are rentals, not purchases"}, so ${rentals === 1 ? "it isn't" : "they aren't"} counted. Tick ${rentals === 1 ? "it" : "them"} in if you want.` });
     if (bought) warnings.push({ from: "service", text: `${bought} line${bought === 1 ? " is a purchase, not a rental" : "s are purchases, not rentals"}, so ${bought === 1 ? "it isn't" : "they aren't"} counted. Tick ${bought === 1 ? "it" : "them"} in if you want.` });
     if (pos.some((p) => p.lot)) warnings.push({ from: "service", text: "Some purchase requests gave the price of the whole lot as the unit price; it's been divided by the count (see each line)." });
-    const other = ce.filter((l) => l.comparable_price === null).length;
+    const other = ce.filter((l) => l.comparable_price === null && !l.mismatch).length;
     if (other) warnings.push({ from: "service", text: `${other} CE line${other === 1 ? " is" : "s are"} costed per another unit than ${input.unit}, so ${other === 1 ? "it isn't" : "they aren't"} counted.` });
     if (listings.some((l) => l.verification.via === "po" && l.comparable_price === null)) warnings.push({ from: "service", text: "Purchase requests don't record a unit, so they only count for things priced per piece (or set, pack, lot…). The others are listed for reference." });
     if (!ce.some((l) => l.comparable_price === null) && costings.lines.some((l) => !l.mismatch && !sameUnit(l.per, input.unit))) {

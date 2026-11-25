@@ -105,7 +105,7 @@ import { markRentals, wantsRental, mismatch } from "../src/costings.js";
 
 const line = (item, qty, price, total) => rec({ "Request No.": [{ text: "PR-0100" }], Status: "Approved",
   "Particulars_Item": [{ text: item }], "Particulars_Quantity": qty, "Particulars_Unit Price": price, "Particulars_Price": total,
-  "Supplier Details_Supplier Name": [{ text: "Example Party Needs Rental" }], "Completed at": Date.UTC(2026, 10, 1) });
+  "Supplier Details_Supplier Name": [{ text: "Example Supplies Trading" }], "Completed at": Date.UTC(2026, 10, 1) });
 
 test("a lot priced as one unit is divided by the count in its name, or by the quantity", () => {
   assert.equal(countInText("30 PCS MONOBLOCK CHAIR WITH BLACK COVER (NOVEMBER 4-6, 2026)"), 30);
@@ -156,4 +156,15 @@ test("rentals don't count toward a price to buy, nor in Claude's comparison", ()
   const ref2 = referenceText(onlyRent, buy);
   assert.match(ref2, /no past purchase price for this, so don't compare/);
   assert.doesNotMatch(ref2, /higher, lower or about the same/);
+});
+
+test("a hire period, or a rental company as supplier, marks a purchase request as a rental", () => {
+  const [a] = poLines(line("30 PCS MONOBLOCK CHAIR WITH BLACK COVER (NOVEMBER 4-6, 2026)", 1, 2520, 2520), ["monoblock", "chair"]);
+  assert.equal(a.rental, true);
+  const [b] = poLines(rec({ Status: "Approved", "Particulars_Item": [{ text: "25 PCS monoblock chair no cover" }], "Particulars_Quantity": 1,
+    "Particulars_Unit Price": 1260, "Supplier Details_Supplier Name": [{ text: "Example Party Needs Rental" }] }), ["monoblock", "chair"]);
+  assert.equal(b.rental, true);
+  const [c] = poLines(rec({ Status: "Approved", "Particulars_Item": [{ text: "Monoblock chair, white" }], "Particulars_Quantity": 300,
+    "Particulars_Unit Price": 270, "Supplier Details_Supplier Name": [{ text: "Example Plastics Trading" }] }), ["monoblock", "chair"]);
+  assert.equal(c.rental, false);
 });

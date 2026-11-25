@@ -43,7 +43,7 @@ import { findPOs } from "./pos.js";
 import { bearer } from "./lark-auth.js";
 
 export const SERVICE = "price-research";
-export const VERSION = "0.6.0";
+export const VERSION = "0.6.1";
 export const API_VERSION = 1;
 export const ALLOW_HEADERS = ["Content-Type", "Authorization"];
 export const KEY_ENV_NAMES = ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"];

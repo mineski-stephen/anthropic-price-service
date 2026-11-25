@@ -98,7 +98,7 @@ test("a past-costings report: listings from the CE lines, internal-use warning, 
   assert.equal(r.meta.source, "costings");
   assert.equal(r.meta.cost_usd.total, 0);
   assert.equal(r.listings.length, 2);
-  assert.ok(r.warnings.some((w) => /costed per another unit/.test(w.text)));
+  assert.ok(r.warnings.some((w) => /1 line is a rental, not a purchase/.test(w.text)));   // the per-day line
   assert.ok(r.warnings.some((w) => /don't share them with clients/.test(w.text)));
   const none = costingsReport({ input, costings: { available: true, terms: ["zzz"], lines: [] }, id: "r2", createdAt: "x",
     service: { name: "p", version: "x", runtime: "node" }, startedAt: Date.now() });
