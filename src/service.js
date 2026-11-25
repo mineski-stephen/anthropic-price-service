@@ -38,12 +38,12 @@ import { runResearch, RunError, ESTIMATE_MS, caps } from "./research.js";
 import { collectEvidence } from "./evidence.js";
 import { buildReport } from "./report.js";
 import { createWriter, CONTENT_TYPE } from "./ndjson.js";
-import { findCostings, costingsReport, referenceText, searchTerms } from "./costings.js";
+import { findCostings, costingsReport, referenceText, searchTerms, markRentals } from "./costings.js";
 import { findPOs } from "./pos.js";
 import { bearer } from "./lark-auth.js";
 
 export const SERVICE = "price-research";
-export const VERSION = "0.5.0";
+export const VERSION = "0.6.0";
 export const API_VERSION = 1;
 export const ALLOW_HEADERS = ["Content-Type", "Authorization"];
 export const KEY_ENV_NAMES = ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"];
@@ -298,7 +298,7 @@ export function createService(env = {}, { prompt, fetch: upstream = (...a) => gl
           const all = { ...rest, available: rest.available || p.available, reason: rest.available || p.available ? "" : rest.reason,
             ce_available: rest.available, ce_reason: rest.reason, pos: p.lines, pos_available: p.available, pos_reason: p.reason };
           out.line({ type: "activity", kind: "costings", count: rest.lines.length, pos: p.lines.length, available: all.available });
-          return all;
+          return markRentals(all, input);
         };
         if (input.source === "costings") {
           await out.line({ type: "start", id, source: "costings", estimate_ms: COSTINGS_ESTIMATE_MS });

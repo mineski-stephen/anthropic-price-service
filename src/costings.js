@@ -14,11 +14,38 @@
  * Search: the item's words (3+ letters, a trailing "s" dropped, everyday words like "rental" left
  * out) must all appear in the CE line's item name, description or remarks. Lines that were
  * inactive, waived, free or contingency are skipped. Newest first, final versions first.
+ *
+ * Rentals: a line that says rent / rental / hire / lease, or a CE line costed per day (or hour,
+ * week, month), is a rental. For an item, a rental price isn't a purchase price (and the other way
+ * round when the request is itself a rental), so such lines get `mismatch` ("rental" or "purchase")
+ * and don't count toward the price or Claude's comparison; they're still listed.
  */
 
 export const MAX_LINES = 40;
 const STOP = new Set(["the", "and", "for", "with", "per", "pcs", "pc", "piece", "pieces", "set", "sets", "new", "rental", "rent", "rentals",
   "service", "services", "unit", "units", "day", "days", "hour", "hours", "event", "events", "package", "inch"]);
+
+export const RENTAL = /\b(rent|rents|rental|rentals|rented|renting|hire|hired|for hire|lease|leased|leasing)\b/i;
+const PER_TIME = /\b(hour|hr|day|night|week|month)s?\b/i;
+/** Does this text describe a rental? */
+export const isRental = (text) => RENTAL.test(String(text || ""));
+/** Is the request itself for a rental (the name or details say so, or it's priced per day…)? */
+export const wantsRental = (input = {}) => isRental(`${input.name || ""} ${input.details || ""}`) || PER_TIME.test(String(input.unit || ""));
+/** "rental" when the line is a rental but the request is to buy, "purchase" the other way, else "".
+ *  Only for items: a service's day rate isn't a rental. */
+export function mismatch(rental, input = {}) {
+  if (input.kind === "service") return "";
+  const want = wantsRental(input);
+  return rental && !want ? "rental" : !rental && want ? "purchase" : "";
+}
+/** Mark each CE line and purchase request with `mismatch` for this request (in place; returns it). */
+export function markRentals(costings, input) {
+  if (!costings) return costings;
+  for (const l of costings.lines || []) l.mismatch = mismatch(l.rental, input);
+  for (const p of costings.pos || []) p.mismatch = mismatch(p.rental, input);
+  return costings;
+}
+const perText = (per) => (per ? (/^per\b/i.test(per) ? per : `per ${per}`) : "");
 
 const num = (v) => { const x = Number(v); return Number.isFinite(x) ? x : null; };
 const str = (v, max) => String(v === undefined || v === null ? "" : v).replace(/\s+/g, " ").trim().slice(0, max);
@@ -35,7 +62,7 @@ export function searchTerms(name) {
 /** Units, compared loosely: "pcs" = "piece", "days" = "day", "sqm/day" = "sqm per day". */
 export function sameUnit(a, b) {
   const n = (u) => {
-    const s = String(u || "").toLowerCase().replace(/\s*\/\s*/g, " per ").replace(/[^a-z ]+/g, " ").replace(/\s+/g, " ").trim()
+    const s = String(u || "").toLowerCase().replace(/\s*\/\s*/g, " per ").replace(/[^a-z ]+/g, " ").replace(/\s+/g, " ").trim().replace(/^per /, "")
       .split(" ").map((w) => (w.length > 3 && w.endsWith("s") ? w.slice(0, -1) : w)).join(" ");
     return { pc: "piece", pcs: "piece", piece: "piece", unit: "piece", ea: "piece", each: "piece", lot: "lot", "": "" }[s] ?? s;
   };
@@ -87,6 +114,7 @@ export function cleanLine(r = {}) {
     final: Number(r.in_final) === 1,
     category: str(r.category, 60),
     package: Number(r.is_package) === 1,
+    rental: isRental(`${r.item || ""} ${r.particular || ""} ${r.remarks || ""}`) || PER_TIME.test(String(r.per || "")),
   };
 }
 
@@ -96,10 +124,12 @@ export function cleanLine(r = {}) {
  * warning from the caller).
  */
 export function costingListings(lines, input) {
-  const anySame = lines.some((l) => sameUnit(l.per, input.unit));
+  const miss = (l) => l.mismatch ?? mismatch(l.rental, input);
+  const anySame = lines.some((l) => !miss(l) && sameUnit(l.per, input.unit));
   return lines.map((l, i) => {
+    const m = miss(l);
     const comparable = !anySame || sameUnit(l.per, input.unit);
-    const facts = [l.project_code && l.project_name ? `${l.project_code} ${l.project_name}` : l.project_name || l.project_code, l.client,
+    const facts = [m === "rental" ? "Rental" : "", l.project_code && l.project_name ? `${l.project_code} ${l.project_name}` : l.project_name || l.project_code, l.client,
       `${l.qty} × ${l.frq || 1} ${l.per || ""}`.trim(), l.markup !== null ? `markup ${Math.round(l.markup * 100)}%` : "",
       l.client_unit !== null ? `client price PHP ${l.client_unit.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "",
       l.actual_unit !== null ? `paid PHP ${l.actual_unit.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (PO)` : "",
@@ -112,7 +142,8 @@ export function costingListings(lines, input) {
       price_text: `PHP ${l.unit_cost.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
       price: l.unit_cost, regular_price: 0, currency: "PHP",
       units_in_price: comparable ? 1 : 0,
-      price_basis: l.per ? `per ${l.per}` : "",
+      price_basis: perText(l.per),
+      mismatch: m,
       vat: "not_stated", condition: "not_applicable", match: "close", availability: "unknown",
       page_date: l.date, notes: facts.join(" · "),
       unit_price: comparable ? l.unit_cost : null, comparable_price: comparable ? l.unit_cost : null,
@@ -133,10 +164,16 @@ export function costingsReport({ input, costings, id, createdAt, service, starte
       ? `No past CE line or approved purchase request mentions ${costings.terms.map((t) => `“${t}”`).join(" and ")}. Try fewer or more common words, or a web check.`
       : "Type a more specific name: the words searched for were all everyday words." });
   } else {
+    const rentals = listings.filter((l) => l.mismatch === "rental").length, bought = listings.filter((l) => l.mismatch === "purchase").length;
+    if (rentals) warnings.push({ from: "service", text: rentals === listings.length
+      ? `Every line here is a rental, not a purchase, so none is counted in the price to buy. Tick them in only if a rental rate is what you want.`
+      : `${rentals} line${rentals === 1 ? " is a rental, not a purchase" : "s are rentals, not purchases"}, so ${rentals === 1 ? "it isn't" : "they aren't"} counted. Tick ${rentals === 1 ? "it" : "them"} in if you want.` });
+    if (bought) warnings.push({ from: "service", text: `${bought} line${bought === 1 ? " is a purchase, not a rental" : "s are purchases, not rentals"}, so ${bought === 1 ? "it isn't" : "they aren't"} counted. Tick ${bought === 1 ? "it" : "them"} in if you want.` });
+    if (pos.some((p) => p.lot)) warnings.push({ from: "service", text: "Some purchase requests gave the price of the whole lot as the unit price; it's been divided by the count (see each line)." });
     const other = ce.filter((l) => l.comparable_price === null).length;
     if (other) warnings.push({ from: "service", text: `${other} CE line${other === 1 ? " is" : "s are"} costed per another unit than ${input.unit}, so ${other === 1 ? "it isn't" : "they aren't"} counted.` });
     if (listings.some((l) => l.verification.via === "po" && l.comparable_price === null)) warnings.push({ from: "service", text: "Purchase requests don't record a unit, so they only count for things priced per piece (or set, pack, lot…). The others are listed for reference." });
-    if (!ce.some((l) => l.comparable_price === null) && costings.lines.some((l) => !sameUnit(l.per, input.unit))) {
+    if (!ce.some((l) => l.comparable_price === null) && costings.lines.some((l) => !l.mismatch && !sameUnit(l.per, input.unit))) {
       warnings.push({ from: "service", text: `None of these lines is costed per ${input.unit}; they're counted as they are. Check the units.` });
     }
     if (costings.lines.length >= MAX_LINES) warnings.push({ from: "service", text: `Only the newest ${MAX_LINES} matching lines are shown. Add a word to narrow it down.` });
@@ -172,6 +209,7 @@ export function poListings(pos, input, start = 0) {
   const comparableUnit = PIECE_LIKE.has(String(input.unit || "").toLowerCase().replace(/s$/, ""));
   return pos.map((p, i) => {
     const comparable = comparableUnit && p.currency === "PHP";
+    const m = p.mismatch ?? mismatch(p.rental, input);
     return {
       id: `l${start + i + 1}`, url: "", host: "",
       title: p.item || "Purchase request",
@@ -179,10 +217,10 @@ export function poListings(pos, input, start = 0) {
       seller_type: "other",
       price_text: `${p.currency} ${fmt(p.unit_price)}`,
       price: p.unit_price, regular_price: 0, currency: p.currency,
-      units_in_price: comparable ? 1 : 0, price_basis: "per unit (the request doesn't record the unit)",
+      units_in_price: comparable ? 1 : 0, price_basis: "per unit (the request doesn't record the unit)", mismatch: m,
       vat: "not_stated", condition: "not_applicable", match: "close", availability: "unknown",
       page_date: p.date,
-      notes: [p.request_no, p.project_code && p.project_name ? `${p.project_code} ${p.project_name}` : p.project_name || p.project_code,
+      notes: [m === "rental" || (p.rental && !m) ? "Rental" : "", p.lot, p.request_no, p.project_code && p.project_name ? `${p.project_code} ${p.project_name}` : p.project_name || p.project_code,
         p.quantity ? `qty ${p.quantity}` : "", p.total ? `total ${p.currency} ${fmt(p.total)}` : ""].filter(Boolean).join(" · "),
       unit_price: comparable ? p.unit_price : null, comparable_price: comparable ? p.unit_price : null,
       verification: { status: "checked", via: "po", evidence: [] },
@@ -200,12 +238,24 @@ const month = (d) => { const t = Date.parse(String(d || "").length === 7 ? `${d}
  * when there's nothing to say.
  */
 export function referenceText(costings, input) {
-  const pos = (costings && costings.pos) || [];
-  const lines = ((costings && costings.lines) || []).filter((l) => l.unit_cost > 0 && sameUnit(l.per, input.unit));
-  if (!pos.length && !lines.length) return "";
+  const all = (costings && costings.pos) || [];
+  const miss = (x) => x.mismatch ?? mismatch(x.rental, input);
+  const pos = all.filter((p) => !miss(p));
+  const others = all.filter((p) => miss(p));
+  const lines = ((costings && costings.lines) || []).filter((l) => l.unit_cost > 0 && !miss(l) && sameUnit(l.per, input.unit));
+  const otherLines = ((costings && costings.lines) || []).filter((l) => miss(l)).length;
+  if (!all.length && !lines.length && !otherLines) return "";
   const out = ["Mineski's own records for this, as reference (internal figures: never report them as listings, and don't quote the amounts in the report):"];
   for (const p of pos.slice(0, 6)) {
-    out.push(`- Paid ${p.currency} ${fmt(p.unit_price)} per unit${p.quantity ? ` for ${p.quantity}` : ""} to ${p.supplier || "a supplier"}${p.date ? ` (${month(p.date)})` : ""}: ${p.item.slice(0, 80)}`);
+    out.push(`- Paid ${p.currency} ${fmt(p.unit_price)} per unit${p.quantity ? ` for ${p.quantity}` : ""} to ${p.supplier || "a supplier"}${p.date ? ` (${month(p.date)})` : ""}: ${p.item.slice(0, 80)}${p.lot ? ` (${p.lot})` : ""}`);
+  }
+  const rentWant = wantsRental(input);
+  if (others.length || otherLines) {
+    const n = others.length + otherLines;
+    const who = [...new Set(others.map((p) => p.supplier).filter(Boolean))].slice(0, 3);
+    out.push(rentWant
+      ? `- ${n} past line${n === 1 ? " was a purchase" : "s were purchases"}, not rentals: not comparable with rental rates, so leave ${n === 1 ? "it" : "them"} out of any comparison.`
+      : `- ${n} past line${n === 1 ? " was a rental" : "s were rentals"} (Mineski rented this${who.length ? `, from ${who.join(", ")}` : ""}): rental rates are not purchase prices, so leave ${n === 1 ? "it" : "them"} out of any comparison.`);
   }
   if (lines.length) {
     const dates = lines.map((l) => l.date).filter(Boolean).sort();
@@ -213,6 +263,11 @@ export function referenceText(costings, input) {
   }
   const suppliers = [...new Set(pos.map((p) => p.supplier).filter(Boolean))].slice(0, 5);
   if (suppliers.length) out.push(`Mineski has bought this from: ${suppliers.join(", ")}. If they publish prices online, check them first.`);
+  if (!pos.length && !lines.length) {
+    out.push(`Mineski has no past ${rentWant ? "rental" : "purchase"} price for this, so don't compare today's prices with these records.`);
+    return out.join("\n");
+  }
+  out.push("Each paid price is per unit as recorded on the request, which may cover several days of a rental or a lot; if a past price clearly isn't for the same thing or unit, say so instead of comparing.");
   out.push("In the summary, say in one sentence whether today's market prices are higher, lower or about the same as what Mineski paid or budgeted, and by roughly what percentage, without quoting the internal amounts. Put a big difference (over 30%) in warnings.");
   return out.join("\n");
 }

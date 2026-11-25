@@ -95,6 +95,8 @@ The report's shape is described at the top of `src/report.js`. Each listing carr
 
 **As Claude's reference:** a web check looks both up before the research starts and adds a short summary to Claude's request: up to six prices paid (with supplier, quantity and month), the middle budgeted cost from CE lines in the requested unit, and the suppliers' names. No client names. The prompt ("Mineski's own records") says to use them only to choose where to look, spot wrong or stale listings, and compare in the summary, never as listings or quoted amounts.
 
+**Rentals and lots:** a line that says rent, rental, hire or lease (or a CE line costed per day, hour, week or month) is a rental. When an item is priced to buy, rentals are listed with `mismatch: "rental"` but not counted, and Claude is told to leave them out of its comparison (the other way round for a rental request; never for services). A purchase request whose unit price is really the whole lot (quantity 1 and "30 PCS" in the item, or a unit price equal to the line total) is divided to a unit price, with a `lot` note.
+
 - `"source": "costings"`: purchase requests (`verification.via: "po"`) and CE lines become the report's listings (`verification.via: "costings"`, no links), so the page works out the typical price from them. Lines in another unit than the request aren't counted, unless none match. `meta.source: "costings"`, no cost.
 - `"source": "web"`: the search runs alongside the research, and the report carries `costings: { available, reason, terms, lines }`.
 

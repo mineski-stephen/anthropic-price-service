@@ -2,6 +2,14 @@
 
 Newest first. Each entry's number is `VERSION` in `src/service.js` and `version` in `package.json`.
 
+## 0.6.0 · Nov 25, 2026
+
+From the first signed-in test (monoblock chairs ×100): every past chair line was a rental, so the past price and Claude's comparison with "what Mineski paid" were wrong.
+
+- **Rentals:** a purchase request or CE line that says rent, rental, hire or lease, or a CE line costed per day (hour, week, month), is a rental (`rental: true`). For an item to buy, rentals get `mismatch: "rental"` (and purchases get `mismatch: "purchase"` when the request is itself a rental): they're listed but not counted, with a warning, and Claude is told they're rental rates and to leave them out of the comparison. When Mineski has no past price of the same kind, Claude is told not to compare at all. Services aren't affected (a day rate isn't a rental).
+- **Lot prices on purchase requests:** when the quantity is 1 and the item says "30 PCS", or the unit price equals the line total, the price is divided to a real unit price and the line carries a `lot` note.
+- Units: "per day" and "day" are now the same unit, so a CE line's `per` of "per unit" matches a request per piece. The listing's basis no longer reads "per per day".
+
 ## 0.5.0 · Nov 25, 2026
 
 - **Past purchase requests:** the service also searches the Lark Procurement table (the table the login check already uses) for approved requests that mention the item, as the signed-in person (`src/pos.js`). It reads only the item, quantity, unit price, currency, total, supplier, project, request number, status and dates, never the supplier bank details. Newest first, up to 30 lines. If Lark refuses the filter, it's tried once without the status condition.

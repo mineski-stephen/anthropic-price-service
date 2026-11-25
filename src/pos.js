@@ -9,8 +9,12 @@
  * Search: Lark's records/search with every term as "Particulars_Item contains <term>" and Status
  * "Approved", newest first, at most MAX_POS. If Lark refuses the filter (a column renamed, a
  * different field type), it's tried once with the item terms only and the status checked here.
+ *
+ * Requests record no unit, and the unit price is sometimes the whole line ("30 PCS ... " at the
+ * lot's price, quantity 1). lotUnit() spots that and divides; such lines carry a `lot` note.
  */
 import { LARK_API } from "./lark-auth.js";
+import { isRental } from "./costings.js";
 
 export const MAX_POS = 30;
 export const PO_FIELDS = ["Request No.", "Status", "Project Code", "Project Name", "Particulars_Item", "Particulars_Quantity",
@@ -55,6 +59,26 @@ const cellDate = (v) => {
   return n && n > 1e11 ? new Date(n).toISOString().slice(0, 10) : str(cellText(v), 10);
 };
 
+const fmt = (v) => v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+/** "30 PCS ...", "x 25 pieces", "(100 units)": the count the item text gives, else 0. */
+export function countInText(text) {
+  const m = String(text || "").match(/\b(\d{1,5})\s*(?:pcs?|pieces?|units?|sets?|pax|nos?\.?)(?![a-z])/i);
+  const n = m ? Number(m[1]) : 0;
+  return n > 1 ? n : 0;
+}
+/**
+ * The real unit price when the unit price given is the whole line's: { unit, quantity, lot } or null.
+ *   - quantity 1 (or none) and the item says "30 PCS": the price is for 30;
+ *   - quantity 30 and the unit price equals the line total: the price is the total.
+ */
+export function lotUnit({ item, price, qty, total, currency = "PHP" }) {
+  if (!(price > 0)) return null;
+  const n = countInText(item);
+  if (n && (!qty || qty === 1)) return { unit: price / n, quantity: n, lot: `${currency} ${fmt(price)} for ${n}, divided` };
+  if (qty > 1 && total > 0 && Math.abs(price - total) <= total * 0.005) return { unit: total / qty, quantity: qty, lot: `${currency} ${fmt(price)} is the line total for ${qty}, divided` };
+  return null;
+}
+
 /** One approved request as PO lines: one per particular that matches the terms. */
 export function poLines(record, terms) {
   const f = (record && record.fields) || {};
@@ -79,10 +103,13 @@ export function poLines(record, terms) {
     const text = r.item.toLowerCase();
     if (aligned && !terms.every((t) => text.includes(t))) continue;
     const currency = !r.cur || /php|₱|peso/i.test(r.cur) ? "PHP" : str(r.cur, 10).toUpperCase();
-    const qty = r.qty && r.qty > 0 ? r.qty : null;
-    const unit = r.price && r.price > 0 ? r.price : r.total && qty ? r.total / qty : null;
+    let qty = r.qty && r.qty > 0 ? r.qty : null;
+    let unit = r.price && r.price > 0 ? r.price : r.total && qty ? r.total / qty : null;
     if (!unit) continue;
-    out.push({ ...base, item: str(r.item, 200), quantity: qty, unit_price: round2(unit), currency, total: r.total ?? (qty ? round2(unit * qty) : null) });
+    const lot = lotUnit({ item: r.item, price: r.price, qty, total: r.total, currency });
+    const total = r.total ?? (lot ? r.price : qty ? round2(unit * qty) : null);
+    if (lot) { unit = lot.unit; qty = lot.quantity; }
+    out.push({ ...base, item: str(r.item, 200), quantity: qty, unit_price: round2(unit), currency, total, lot: lot ? lot.lot : "", rental: isRental(r.item) });
   }
   return out;
 }

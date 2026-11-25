@@ -98,3 +98,62 @@ test("purchase requests count only for piece-like units; in a past-costings repo
   assert.equal(r.listings[0].seller, "Example Plastics Inc.");
   assert.match(r.summary, /^1 approved purchase request line mention monoblock, chair\.$/);
 });
+
+// ---- rentals and lot prices (0.6.0), in the shapes the live Procurement table returned ------------
+import { lotUnit, countInText } from "../src/pos.js";
+import { markRentals, wantsRental, mismatch } from "../src/costings.js";
+
+const line = (item, qty, price, total) => rec({ "Request No.": [{ text: "PR-0100" }], Status: "Approved",
+  "Particulars_Item": [{ text: item }], "Particulars_Quantity": qty, "Particulars_Unit Price": price, "Particulars_Price": total,
+  "Supplier Details_Supplier Name": [{ text: "Example Party Needs Rental" }], "Completed at": Date.UTC(2026, 10, 1) });
+
+test("a lot priced as one unit is divided by the count in its name, or by the quantity", () => {
+  assert.equal(countInText("30 PCS MONOBLOCK CHAIR WITH BLACK COVER (NOVEMBER 4-6, 2026)"), 30);
+  assert.equal(countInText("Monoblock chair (3 days)"), 0);
+  assert.equal(countInText("1 pc chair"), 0);
+  const [a] = poLines(line("30 PCS MONOBLOCK CHAIR WITH BLACK COVER", 1, 2520, 2520), ["monoblock", "chair"]);
+  assert.equal(a.unit_price, 84);
+  assert.equal(a.quantity, 30);
+  assert.match(a.lot, /2,520\.00 for 30, divided/);
+  const [b] = poLines(line("Monoblock chair", 25, 1260, 1260), ["monoblock", "chair"]);
+  assert.equal(b.unit_price, 50.4);
+  assert.match(b.lot, /line total for 25/);
+  const [c] = poLines(line("Monoblock chair", 300, 270, 81000), ["monoblock", "chair"]);
+  assert.equal(c.unit_price, 270);
+  assert.equal(c.lot, "");
+  assert.equal(lotUnit({ item: "chair", price: 0, qty: 1 }), null);
+});
+
+test("rentals don't count toward a price to buy, nor in Claude's comparison", () => {
+  const buy = readInput({ name: "monoblock chair", unit: "piece", quantity: 100 });
+  const rent = readInput({ name: "monoblock chair rental", unit: "day" });
+  assert.equal(wantsRental(buy), false);
+  assert.equal(wantsRental(rent), true);
+  assert.equal(mismatch(true, buy), "rental");
+  assert.equal(mismatch(false, rent), "purchase");
+  assert.equal(mismatch(true, readInput({ kind: "service", name: "emcee", unit: "day" })), "");
+
+  const pos = [line("Rental of Monoblock Chairs (3 days)", 20, 45, 900), line("Monoblock chair, white", 300, 270, 81000)].flatMap((r) => poLines(r, ["monoblock", "chair"]));
+  assert.deepEqual(pos.map((p) => p.rental), [true, false]);
+  const ce = cleanLine({ item: "Monoblock Chairs", particular: "Black Monoblock Chairs with cover", qty: 150, frq: 3, per: "per day", unit_price_php: 20, in_final: 1 });
+  assert.equal(ce.rental, true);
+  const costings = markRentals({ available: true, terms: ["monoblock", "chair"], lines: [ce], pos }, buy);
+
+  const r = costingsReport({ input: buy, costings, id: "x", createdAt: "", service: { name: "price-research", version: "t", runtime: "node" }, startedAt: Date.now() });
+  const rentalRows = r.listings.filter((l) => l.mismatch === "rental");
+  assert.equal(rentalRows.length, 2);
+  assert.ok(rentalRows.every((l) => /Rental/.test(l.notes)));
+  assert.equal(r.listings.find((l) => l.verification.via === "costings").price_basis, "per day");
+  assert.ok(r.warnings.some((w) => /2 lines are rentals/.test(w.text)));
+
+  const ref = referenceText(costings, buy);
+  assert.match(ref, /Paid PHP 270\.00 per unit for 300/);
+  assert.doesNotMatch(ref, /Paid PHP 45/);
+  assert.match(ref, /2 past lines were rentals .*leave them out of any comparison/);
+  assert.match(ref, /higher, lower or about the same/);
+
+  const onlyRent = markRentals({ available: true, terms: ["monoblock", "chair"], lines: [ce], pos: [pos[0]] }, buy);
+  const ref2 = referenceText(onlyRent, buy);
+  assert.match(ref2, /no past purchase price for this, so don't compare/);
+  assert.doesNotMatch(ref2, /higher, lower or about the same/);
+});
