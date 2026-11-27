@@ -1,10 +1,12 @@
 {
   "name": "price-research",
-  "version": "0.6.1",
+  "version": "0.7.1",
   "private": true,
-  "description": "The price check demo's service: prices an item from Lazada's listings sorted by Claude Haiku, or researches it with Claude and web search, then checks every listing against the pages it read. Node (server.js) and Cloudflare Workers (src/worker.js).",
+  "description": "The price check's service: researches today's price of an item or service in the Philippines with Claude and web search, checks every listing against the pages it read, finds product photos, and keeps every search in a shared Lark table (Saved searches). Node (server.js) and Cloudflare Workers (src/worker.js).",
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node server.js",
     "test": "node --test tests/",

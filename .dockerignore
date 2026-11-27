@@ -1,0 +1,6 @@
+# The image needs only these; everything else (docs, tests, .env, recorded runs, Workers files) stays out.
+*
+!package.json
+!server.js
+!prompt.md
+!src/

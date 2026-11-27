@@ -1,15 +1,16 @@
 # Cloudflare Workers: runs src/worker.js (which runs src/service.js, the same code Node runs).
 # Deployed as "anthropic-price-service" (https://anthropic-price-service.stephen-lin.workers.dev):
 #   npx wrangler deploy
-# The Quick web check (Haiku) and past costings are meant to fit the free plan's 10 ms of CPU.
-# Web research on Opus or Sonnet reads larger streams; if it hits the limit on Workers Paid, add
+# Quick (Haiku) and the saved searches are meant to fit the free plan's 10 ms of CPU.
+# Standard (Sonnet) and Thorough (Opus) read larger streams; if they hit the limit, on Workers Paid add
 #   [limits]
 #   cpu_ms = 30000
 #
 # Settings are NOT in this file. Add them under the Worker > Settings > Variables and Secrets:
 #   ANTHROPIC_API_KEY    as a secret (required)
 #   ALLOWED_ORIGINS      the hosted page's origin (never *)
-#   (REQUIRE_LARK_LOGIN stays on; LARK_BASE_TOKEN / LARK_TABLE_ID default to the procurement table)
+#   (REQUIRE_LARK_LOGIN stays on; LARK_BASE_TOKEN / LARK_TABLE_ID default to the procurement table,
+#   SEARCHES_TABLE_ID to its "Price searches" table, where every search is saved)
 name = "anthropic-price-service"
 main = "src/worker.js"
 compatibility_date = "2026-05-01"

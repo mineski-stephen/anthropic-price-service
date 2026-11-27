@@ -2,16 +2,23 @@
  * What the service sends to Claude (pure: no network). The page sends a short research request;
  * this module checks it and turns it into the Messages API body.
  *
- *   readInput(raw)            the page's JSON, checked and tidied (throws InputError)
+ *   readInput(raw)            the page's JSON ({ name, details, depth, search_id }), checked and tidied
+ *                             (throws InputError). Whether it's an item or a service, and its unit,
+ *                             are Claude's call (the report's kind and unit); guessRequest() only
+ *                             guesses them first, for matching Mineski's own past prices.
  *   buildBody(input, opts)    the request body: model, effort, the three tools, system, messages
  *   userText(input, today)    the user turn: the request in plain words (the system prompt never
  *                             changes, so it stays cached between runs)
  *
+ * Every search is for the Philippines, priced in pesos, new or used, with suppliers. The depth picks
+ * the model: Quick is Claude Haiku 5.5 (the old "Quick web check"), Standard Sonnet 5.5, Thorough
+ * Opus 5.5.
+ *
  * Tools (identical for the whole run: a paused turn must be continued with the same tools)
- *   web_search_20260318   search, filtered in code ("dynamic filtering"), localised to the market
+ *   web_search_20260318   search, filtered in code ("dynamic filtering"), localised to the Philippines
  *   web_fetch_20260318    open pages found by search (it can't open a URL nobody has seen)
  *                         Claude Haiku 5.5 has no dynamic filtering: it gets web_search_20250305 and
- *                         web_fetch_20250910, the plain versions (the page's "Quick web check").
+ *                         web_fetch_20250910, the plain versions.
  *   submit_report         a strict client tool: the report. Not output_config.format, because web
  *                         search citations are always on and the API refuses citations with it.
  */
@@ -24,31 +31,25 @@ export const MODELS = {
 };
 export const DEFAULT_MODEL = "claude-opus-5-5";
 
-/* Per depth: effort, the most searches and page reads per request, and how many times a paused
-   turn may be continued. "Find suppliers too" adds SUPPLIER_EXTRA. contentTokens: how much of each
-   opened page Claude reads. maxUsd: this depth's own spending cap (below MAX_RUN_USD).
-   "check" is the page's Quick web check on Haiku: few searches, but the sellers' pages opened, so
-   prices are confirmed on the page; marketplaces skipped and price-listing retailers suggested. */
+/* Per depth: the model, effort, the most searches and page reads per request (suppliers included),
+   and how many times a paused turn may be continued. contentTokens: how much of each opened page
+   Claude reads. maxUsd: this depth's own spending cap (below MAX_RUN_USD).
+   Quick is the old Quick web check on Haiku: few searches, but the sellers' pages opened, so prices
+   are confirmed on the page; marketplaces skipped and price-listing retailers suggested. */
 export const DEPTHS = {
-  check: { label: "Check", effort: "medium", searches: 3, fetches: 5, continuations: 1, contentTokens: 4000, maxUsd: 0.15, focused: true },
-  quick: { label: "Quick", effort: "low", searches: 3, fetches: 2, continuations: 1 },
-  standard: { label: "Standard", effort: "medium", searches: 6, fetches: 4, continuations: 2 },
-  thorough: { label: "Thorough", effort: "high", searches: 10, fetches: 8, continuations: 4 },
+  quick: { label: "Quick", model: "claude-haiku-5-5", effort: "medium", searches: 4, fetches: 6, continuations: 1, contentTokens: 4000, maxUsd: 0.2, focused: true },
+  standard: { label: "Standard", model: "claude-sonnet-5-5", effort: "medium", searches: 8, fetches: 6, continuations: 2 },
+  thorough: { label: "Thorough", model: "claude-opus-5-5", effort: "high", searches: 12, fetches: 10, continuations: 4 },
 };
-export const SUPPLIER_EXTRA = { searches: 2, fetches: 2 };
+export const DEFAULT_DEPTH = "quick";
 /* Skipped by focused checks: marketplaces and social sites refuse page readers or list one-off
    sellers, so their prices can't be confirmed. */
 export const SKIP_SITES = ["lazada.com.ph", "shopee.ph", "carousell.ph", "facebook.com", "tiktok.com", "instagram.com"];
 /* Philippine retailers that publish prices on their own pages (named for the search, not enforced). */
 export const PH_RETAILERS = "ACE Hardware, Wilcon Depot, Handyman, CW Home Depot, AllHome, Office Warehouse, National Book Store, PC Express, DynaQuest, Villman, Abenson, Anson's, SM Appliance";
 
-export const MARKETS = {
-  PH: { name: "the Philippines", currency: "PHP", timezone: "Asia/Manila", vat: 0.12 },
-  SG: { name: "Singapore", currency: "SGD", timezone: "Asia/Singapore", vat: 0 },
-  MY: { name: "Malaysia", currency: "MYR", timezone: "Asia/Kuala_Lumpur", vat: 0 },
-  US: { name: "the United States", currency: "USD", timezone: "America/New_York", vat: 0 },
-  GB: { name: "the United Kingdom", currency: "GBP", timezone: "Europe/London", vat: 0 },
-};
+/** The one market: the Philippines, in pesos (12% VAT). */
+export const MARKET = { country: "PH", name: "the Philippines", currency: "PHP", timezone: "Asia/Manila", vat: 0.12 };
 
 // Suppliers' cost categories (appraisal/internal/pipeline/config/categories.csv), plus Other.
 export const CATEGORIES = ["Manpower", "Talent/KOL", "Equipment & Furniture", "Stage Technicals", "Fabrication & Collateral",
@@ -59,61 +60,58 @@ export const SELLER_TYPES = ["official_store", "retailer", "marketplace_seller",
 export const SUPPLIER_TYPES = ["manufacturer", "distributor", "retailer", "service_provider", "rental", "marketplace_seller", "other"];
 export const CURRENCIES = ["PHP", "USD", "SGD", "MYR", "GBP", "OTHER"];
 
-export const LIMITS = { name: 200, details: 1000, unit: 40, city: 80, sites: 20, quantity: 10000000 };
+export const LIMITS = { name: 200, details: 1000, unit: 40 };
 
 export class InputError extends Error {}
 
 const text = (v, max) => String(v === undefined || v === null ? "" : v).replace(/\s+/g, " ").trim().slice(0, max);
 
-/** Web addresses for the "only these sites" / "skip these sites" lists: plain ASCII host names
- *  (paths dropped: web fetch matches whole domains only). Returns { list, rejected }. */
-export function cleanDomains(items) {
-  const list = [], rejected = [];
-  for (const raw of Array.isArray(items) ? items : String(items || "").split(/[\s,;]+/)) {
-    const s = String(raw || "").trim();
-    if (!s) continue;
-    const host = s.toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, "").split(/[/?#]/)[0].replace(/:\d+$/, "").replace(/^www\./, "").replace(/\.$/, "");
-    if (/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(host) && !/^\d+(\.\d+)+$/.test(host) && !host.split(".").some((p) => p.startsWith("-") || p.endsWith("-"))) {
-      if (!list.includes(host)) list.push(host);
-    } else rejected.push(s);
-  }
-  return { list, rejected };
+/* Words that mark a service (someone's work) rather than a thing to buy or rent. Only a first
+   guess, for matching past CE lines before the research; Claude's report says what it really is. */
+const SERVICE_WORDS = /\b(services?|emcees?|hosts?|hosting|photograph(er|ers|y)|videograph(er|ers|y)|video (coverage|production|editing)|editing|printing|catering|caterers?|transport(ation)?|trucking|deliver(y|ies)|shuttles?|logistics|installation|ingress|egress|manpower|staff(ing)?|crew|ushers?|usherettes?|marshals?|security|guards?|technicians?|operators?|cleaning|janitorial|designers?|livestream(ing)?|streaming|broadcast(ing)?|consult(ing|ancy|ants?)|training|workshops?|permits?|insurance|repairs?|maintenance|labou?r|talents?|performers?|dancers?|bands?|djs?|make-?up|hair|styling|accommodation|translation|interpret(er|ers|ation)|courier)\b/i;
+/* A unit written in the request: "per sqm per day", "/day", "per pax". */
+const UNIT_WRITTEN = /(?:\bper\s+|\/\s*)(sq\.?\s*m(?:eters?)?(?:\s+per\s+day)?|sqm(?:\s+per\s+day)?|square\s+meters?|pieces?|pcs?|units?|sets?|packs?|box(?:es)?|pairs?|reams?|rolls?|meters?|kgs?|liters?|days?|hours?|hrs?|nights?|weeks?|months?|events?|shows?|sessions?|pax|persons?|heads?|lots?)\b/i;
+
+/** A first guess at what's being priced: { kind: "item" | "service", unit } ("" when not written). */
+export function guessRequest(name, details = "") {
+  const all = `${name} ${details}`;
+  const u = all.match(UNIT_WRITTEN);
+  let unit = u ? u[1].toLowerCase().replace(/\s+/g, " ") : "";
+  unit = unit.replace(/^(sq\.? ?m(eters?)?|square meters?)/, "sqm").replace(/^(pcs?|pieces?)$/, "piece").replace(/^hrs?$/, "hour")
+    .replace(/^box(es)?$/, "box").replace(/^(persons?|heads?)$/, "pax");
+  if (unit !== "pax" && unit !== "box") unit = unit.replace(/s$/, "");
+  return { kind: SERVICE_WORDS.test(all) ? "service" : "item", unit };
 }
 
-/** The page's request, checked. Throws InputError with a sentence the page can show. */
+/** The model for a depth: the depth's own, unless the service doesn't offer it. */
+export function modelFor(depth, models = Object.keys(MODELS), defaultModel = DEFAULT_MODEL) {
+  const want = (DEPTHS[depth] || DEPTHS[DEFAULT_DEPTH]).model;
+  return models.includes(want) ? want : models.includes(defaultModel) ? defaultModel : models[0];
+}
+
+/** A saved search's id ("ps" and letters): every version of one search shares it. */
+export const SEARCH_ID = /^ps[a-z0-9]{6,30}$/;
+
+/** The page's request, checked. Throws InputError with a sentence the page can show.
+ *  `kind` and `unit` may be given as hints (tests, other callers); the page sends neither. */
 export function readInput(raw = {}, { models = Object.keys(MODELS), defaultModel = DEFAULT_MODEL } = {}) {
   if (!raw || typeof raw !== "object") throw new InputError("The request couldn't be read.");
-  const kind = raw.kind === "service" ? "service" : "item";
   const name = text(raw.name, LIMITS.name);
-  if (name.length < 2) throw new InputError(`Type the ${kind} you want priced.`);
-  const quantity = Number(raw.quantity);
-  const market = MARKETS[String(raw.market || "PH").toUpperCase()] ? String(raw.market || "PH").toUpperCase() : null;
-  if (!market) throw new InputError("Pick a market from the list.");
-  // "costings": Mineski's own past CE lines only (costings.js, no Claude); "web": research with web search.
-  const source = raw.source === "costings" ? "costings" : "web";
-  const depth = DEPTHS[raw.depth] ? raw.depth : "standard";
-  const model = raw.model ? String(raw.model) : defaultModel;
-  if (source === "web" && (!models.includes(model) || !MODELS[model])) throw new InputError("That model isn't available on this service.");
-  const sites = raw.sites && typeof raw.sites === "object" ? raw.sites : {};
-  const mode = ["only", "skip"].includes(sites.mode) ? sites.mode : "none";
-  const domains = mode === "none" ? { list: [], rejected: [] } : cleanDomains(sites.list);
-  if (domains.rejected.length) throw new InputError(`“${domains.rejected[0].slice(0, 60)}” isn't a web address. Use names like lazada.com.ph.`);
-  if (domains.list.length > LIMITS.sites) throw new InputError(`List at most ${LIMITS.sites} sites.`);
-  if (mode === "only" && !domains.list.length) throw new InputError("Add at least one site to search, or choose “Any site”.");
+  if (name.length < 2) throw new InputError("Type what you want priced.");
+  const details = text(raw.details, LIMITS.details);
+  // "check" was the old Quick web check; it is Quick now.
+  const depth = raw.depth === "check" ? "quick" : DEPTHS[raw.depth] ? raw.depth : DEFAULT_DEPTH;
+  const searchId = String(raw.search_id || "").trim();
+  if (searchId && !SEARCH_ID.test(searchId)) throw new InputError("That saved search couldn't be found. Open it again from Saved searches.");
+  const guess = guessRequest(name, details);
   return {
-    source,
-    kind,
     name,
-    details: text(raw.details, LIMITS.details),
-    quantity: Number.isFinite(quantity) && quantity > 0 ? Math.min(quantity, LIMITS.quantity) : 1,
-    unit: text(raw.unit, LIMITS.unit) || (kind === "service" ? "service" : "piece"),
-    market,
-    city: text(raw.city, LIMITS.city),
-    condition: kind === "item" && raw.condition === "any" ? "any" : "new",
+    details,
     depth,
-    suppliers: raw.suppliers !== false,
-    model,
-    sites: { mode: domains.list.length ? mode : "none", list: domains.list },
+    model: modelFor(depth, models, defaultModel),
+    kind: raw.kind === "service" || raw.kind === "item" ? raw.kind : guess.kind,
+    unit: text(raw.unit, LIMITS.unit) || guess.unit,
+    search_id: searchId,
   };
 }
 
@@ -128,8 +126,9 @@ const list = (items, description) => ({ type: "array", items, description });
    length limits, additionalProperties false on every object. tests/request.test.mjs checks them. */
 export const REPORT_SCHEMA = obj({
   interpreted: s("What exactly you priced, in one short line (brand, model or spec, size)."),
+  kind: e(["item", "service"], "item: a thing to buy or rent. service: someone's work (an emcee, printing, transport)."),
   category: e(CATEGORIES, "The cost category this belongs to."),
-  unit: s("The unit every unit price is for, for example: piece, pack of 4, day, sqm per day, pax."),
+  unit: s("The unit every unit price is for, as it's usually priced: piece, pack, set, day, hour, event, sqm per day, pax."),
   summary: s("Two or three plain sentences: the typical price, the spread and what drives it."),
   listings: list(obj({
     url: s("The listing's page, copied exactly from a search result or a page you opened."),
@@ -173,19 +172,20 @@ export const REPORT_TOOL = {
 export const WRAP_UP = "Stop researching now. Call submit_report with what you have found so far, and say in warnings that the research was cut short.";
 export const NUDGE = "Please call submit_report now with your findings. If you found nothing usable, submit empty lists and explain why in warnings.";
 
+/** The searches and page reads a depth allows, and how often a paused turn may go on. */
+export const caps = (input) => {
+  const d = DEPTHS[input.depth] || DEPTHS[DEFAULT_DEPTH];
+  return { searches: d.searches, fetches: d.fetches, continuations: d.continuations };
+};
+
 /** The tools for this request (identical for every request of one run). */
 export function buildTools(input) {
   const d = DEPTHS[input.depth];
-  const extra = input.suppliers ? SUPPLIER_EXTRA : { searches: 0, fetches: 0 };
-  const m = MARKETS[input.market];
-  const where = { type: "approximate", country: input.market, timezone: m.timezone };
-  if (input.city) where.city = input.city;
+  const where = { type: "approximate", country: MARKET.country, timezone: MARKET.timezone };
   const filtering = MODELS[input.model] ? MODELS[input.model].filtering : true;
-  const search = { type: filtering ? "web_search_20260318" : "web_search_20250305", name: "web_search", max_uses: d.searches + extra.searches, user_location: where };
-  const fetch = { type: filtering ? "web_fetch_20260318" : "web_fetch_20250910", name: "web_fetch", max_uses: d.fetches + extra.fetches, max_content_tokens: d.contentTokens || 6000 };
-  if (input.sites.mode === "only") { search.allowed_domains = [...input.sites.list]; fetch.allowed_domains = [...input.sites.list]; }
-  if (input.sites.mode === "skip") { search.blocked_domains = [...input.sites.list]; fetch.blocked_domains = [...input.sites.list]; }
-  if (d.focused && input.sites.mode === "none") { search.blocked_domains = [...SKIP_SITES]; fetch.blocked_domains = [...SKIP_SITES]; }
+  const search = { type: filtering ? "web_search_20260318" : "web_search_20250305", name: "web_search", max_uses: d.searches, user_location: where };
+  const fetch = { type: filtering ? "web_fetch_20260318" : "web_fetch_20250910", name: "web_fetch", max_uses: d.fetches, max_content_tokens: d.contentTokens || 6000 };
+  if (d.focused) { search.blocked_domains = [...SKIP_SITES]; fetch.blocked_domains = [...SKIP_SITES]; }
   return [search, fetch, REPORT_TOOL];
 }
 
@@ -208,29 +208,26 @@ export function buildBody(input, { system, messages, tools = buildTools(input), 
 
 /** The user turn: the request in plain words. */
 export function userText(input, today, reference = "") {
-  const m = MARKETS[input.market];
   const d = DEPTHS[input.depth];
-  const extra = input.suppliers ? SUPPLIER_EXTRA : { searches: 0, fetches: 0 };
-  const thing = input.kind === "service" ? "Service" : "Item";
   const lines = [
     `Today's date: ${today}.`,
     "",
-    `Research the current market price of this ${input.kind} for Mineski's procurement team.`,
+    "Research the current market price of this for Mineski's procurement team.",
     "",
-    `${thing}: ${input.name}`,
+    `What: ${input.name}`,
     `Details: ${input.details || "none given"}`,
-    `Quantity needed: ${input.quantity} (unit: ${input.unit})`,
-    `Market: ${m.name}, prices in ${m.currency}.${input.city ? ` The buyer is in ${input.city}.` : ""}`,
+    "",
+    "- Decide whether it's an item (a thing to buy or rent) or a service (someone's work), and say which in kind. If the words could mean either, price what a buyer most likely means and say so in assumptions.",
+    "- Choose the unit it's usually priced in (piece, pack, set, day, hour, event, sqm per day, pax) and give every listing's units_in_price for that unit.",
+    `- Market: ${MARKET.name}, prices in ${MARKET.currency}. Any seller is fine if it sells in the Philippines or ships there.`,
+    "- New or used: both are fine. Set condition on every listing.",
+    `- Depth: ${d.label.toLowerCase()}. You have up to ${d.searches} web searches and ${d.fetches} page reads.`,
   ];
-  if (input.kind === "item") lines.push(`Condition: ${input.condition === "any" ? "new or used" : "new only"}`);
-  lines.push(`Depth: ${d.label.toLowerCase()}. You have up to ${d.searches + extra.searches} web searches and ${d.fetches + extra.fetches} page reads.`);
   if (d.focused) {
-    lines.push("Before reporting, open the pages of the most useful offers with web_fetch (up to your page reads), so each price is confirmed on its own page. Report only prices you saw on a page or in a search result.");
-    if (input.market === "PH" && input.kind === "item") lines.push(`Prefer sellers that publish prices on their own pages, for example: ${PH_RETAILERS}, and brand or distributor stores.`);
+    lines.push("- Before reporting, open the pages of the most useful offers with web_fetch (up to your page reads), so each price is confirmed on its own page. Report only prices you saw on a page or in a search result.");
+    lines.push(`- For things to buy, prefer sellers that publish prices on their own pages, for example: ${PH_RETAILERS}, and brand or distributor stores.`);
   }
-  lines.push(input.suppliers ? "Suppliers: also list 3 to 6 suppliers procurement could contact." : "Suppliers: not needed; leave the suppliers list empty unless a seller is clearly worth contacting.");
-  if (input.sites.mode === "only") lines.push(`Only use these sites: ${input.sites.list.join(", ")}`);
-  if (input.sites.mode === "skip") lines.push(`Don't use these sites: ${input.sites.list.join(", ")}`);
+  lines.push("- Suppliers: also list 3 to 6 suppliers procurement could contact (the sellers you found count).");
   if (reference) lines.push("", reference);
   lines.push("", "When you're done, call submit_report.");
   return lines.join("\n");

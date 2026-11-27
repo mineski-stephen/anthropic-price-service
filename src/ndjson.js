@@ -2,14 +2,18 @@
  * The research answer is a stream of JSON lines (application/x-ndjson), so the page can show real
  * progress during a run of a minute or more:
  *
- *   {"type":"start", "id", "model", "depth", "caps": {searches, fetches}, "estimate_ms"}
- *   {"type":"activity", "kind": "search"|"search_done"|"fetch"|"fetch_done"|"filter"|"writing"|"checking"|"wrap_up", ...}
+ *   {"type":"start", "id", "search_id", "model", "depth", "caps": {searches, fetches}, "estimate_ms"}
+ *   {"type":"activity", "kind": "costings"|"search"|"search_done"|"fetch"|"fetch_done"|"filter"|"writing"|"checking"|"images"|"wrap_up"|"retry", ...}
  *   {"type":"usage", "cost_usd", "searches", "fetches"}
  *   {"type":"ping"}                                  every 15 s, so nothing between closes the line
- *   {"type":"report", "report": {...}}               the last line on success
+ *   {"type":"report", "report": {...}}               the search is done
+ *   {"type":"saved", "saved": {...} | null, "error": {"code", "message"} | null}
+ *                                                    the last line after a report: the record in the
+ *                                                    saved searches table, or why it isn't there
  *   {"type":"error", "error": {"code", "message"}}   the last line on failure
  *
- * Exactly one "report" or "error" line ends a stream. A stream that ends without one was cut off.
+ * Exactly one "report" or "error" line comes; a report is followed by one "saved" line. A stream
+ * that ends without a report or an error was cut off.
  */
 
 export const CONTENT_TYPE = "application/x-ndjson; charset=utf-8";

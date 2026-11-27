@@ -13,9 +13,11 @@
  * Progress (searches, pages, code) is passed to `emit` as it streams.
  */
 import { ClaudeError } from "./claude.js";
-import { DEPTHS, SUPPLIER_EXTRA, buildBody, buildTools, userText, WRAP_UP, NUDGE } from "./request.js";
+import { DEPTHS, caps, buildBody, buildTools, userText, WRAP_UP, NUDGE } from "./request.js";
 import { createTally } from "./cost.js";
 import { hostOf } from "./evidence.js";
+
+export { caps };
 
 export class RunError extends Error {
   constructor(code, message) {
@@ -25,13 +27,7 @@ export class RunError extends Error {
 }
 
 /** Typical run length per depth, before the page has timings of its own (ms). */
-export const ESTIMATE_MS = { check: 32000, quick: 60000, standard: 120000, thorough: 240000 };
-
-export const caps = (input) => {
-  const d = DEPTHS[input.depth];
-  const x = input.suppliers ? SUPPLIER_EXTRA : { searches: 0, fetches: 0 };
-  return { searches: d.searches + x.searches, fetches: d.fetches + x.fetches, continuations: d.continuations };
-};
+export const ESTIMATE_MS = { quick: 40000, standard: 120000, thorough: 240000 };
 
 /** Turn stream events into progress lines. */
 export function progress(ev, block, emit) {
@@ -68,7 +64,7 @@ export async function runResearch({ client, input, system, today, cfg, signal = 
   for (;;) {
     if (run.requests >= limits.continuations + 4) throw new RunError("no_report", "The research went on too long without a report. Try again, or try Quick.");
     const left = deadline - Date.now();
-    if (left < 15000) throw new RunError("timeout", "The research took too long and was stopped. Try Quick, or a more specific name.");
+    if (left < 15000) throw new RunError("timeout", "The search took too long and was stopped. Try Quick, or a more specific name.");
     const body = buildBody(input, { system, messages, tools, fallback: cfg.fallback, container: run.container, maxTokens: cfg.maxTokens });
     run.requests++;
     let msg;

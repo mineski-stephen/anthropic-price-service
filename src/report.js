@@ -4,11 +4,13 @@
  * the sources, the cost and how the run went.
  *
  * {
- *   schema: 1, id, created_at, request: {...},
- *   interpreted, category, unit, currency, summary, assumptions: [text],
+ *   schema: 1, id, created_at, request: { name, details, depth, model, search_id },
+ *   search_id,           the saved search this is a version of (set when it's saved)
+ *   interpreted, kind (item | service), category, unit, currency, summary, assumptions: [text],
  *   warnings: [{ from: "model" | "service", text }],
  *   listings: [{ id, url, host, title, seller, seller_type, price_text, price, regular_price, currency,
  *     units_in_price, price_basis, vat, condition, match, availability, page_date, notes,
+ *     image,               the product photo the listing's page names (images.js), else ""
  *     unit_price,          price / units_in_price (null when it can't be converted)
  *     comparable_price,    unit_price with VAT added when the page says VAT is excluded (null when
  *                          not comparable: another currency, or no unit price)
@@ -21,7 +23,7 @@
  *     continuations, ended, usage, cost_usd: { tokens, searches, total }, priced, fallback }
  * }
  */
-import { CATEGORIES, SELLER_TYPES, SUPPLIER_TYPES, CURRENCIES, DEPTHS, MARKETS } from "./request.js";
+import { CATEGORIES, SELLER_TYPES, SUPPLIER_TYPES, CURRENCIES, DEPTHS, MARKET } from "./request.js";
 import { normUrl, hostOf } from "./evidence.js";
 import { index, verifyListing, verifySupplier } from "./verify.js";
 
@@ -90,7 +92,7 @@ export function pageAgeDate(age, now = Date.now()) {
 }
 
 export function buildReport({ input, raw = {}, ev, run, id, createdAt, service, startedAt, costings = null }) {
-  const market = MARKETS[input.market];
+  const market = MARKET;
   // When Claude leaves a listing undated, its search result's age stands in (so old prices show as old).
   const ageOf = new Map(ev.pages.filter((p) => p.page_age).map((p) => [normUrl(p.url), p.page_age]));
   const now = Date.parse(createdAt) || Date.now();
@@ -107,7 +109,7 @@ export function buildReport({ input, raw = {}, ev, run, id, createdAt, service, 
     const unit = c.units_in_price > 0 && c.price > 0 ? round2(c.price / c.units_in_price) : null;
     const sameCurrency = c.currency === market.currency;
     const comparable = unit !== null && sameCurrency ? round2(unit * (c.vat === "excluded" && market.vat ? 1 + market.vat : 1)) : null;
-    listings.push({ id: `l${listings.length + 1}`, ...c, host: hostOf(c.url), unit_price: unit, comparable_price: comparable,
+    listings.push({ id: `l${listings.length + 1}`, ...c, image: "", host: hostOf(c.url), unit_price: unit, comparable_price: comparable,
       verification: verifyListing(c, ix) });
     if (listings.length >= MAX_LISTINGS) break;
   }
@@ -129,10 +131,12 @@ export function buildReport({ input, raw = {}, ev, run, id, createdAt, service, 
     schema: SCHEMA,
     id,
     created_at: createdAt,
-    request: { ...input, sites: { ...input.sites, list: [...input.sites.list] } },
+    request: { name: input.name, details: input.details, depth: input.depth, model: input.model, search_id: input.search_id || "" },
+    search_id: input.search_id || "",
     interpreted: str(raw.interpreted, 200) || input.name,
+    kind: pick(raw.kind, ["item", "service"], input.kind || "item"),
     category: pick(raw.category, CATEGORIES, "Other"),
-    unit: str(raw.unit, 60) || input.unit,
+    unit: str(raw.unit, 60) || input.unit || "piece",
     currency: market.currency,
     summary: str(raw.summary, 800),
     assumptions: (Array.isArray(raw.assumptions) ? raw.assumptions : []).map((a) => str(a, 300)).filter(Boolean).slice(0, 10),

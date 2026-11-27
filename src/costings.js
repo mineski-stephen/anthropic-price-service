@@ -9,7 +9,7 @@
  * costings are simply "not available".
  *
  *   findCostings(db, input)      -> { available, reason, terms, lines: [...] }
- *   costingListings(lines, input) the lines as report listings (a "Past costings" check prices from them)
+ *   referenceText(costings, input) Mineski's own prices, in a few lines for Claude's request
  *
  * Search: the item's words (3+ letters, a trailing "s" dropped, everyday words like "rental" left
  * out) must all appear in the CE line's item name, description or remarks. Lines that were
@@ -47,7 +47,6 @@ export function markRentals(costings, input) {
   for (const p of costings.pos || []) p.mismatch = mismatch(p.rental, input);
   return costings;
 }
-const perText = (per) => (per ? (/^per\b/i.test(per) ? per : `per ${per}`) : "");
 
 const num = (v) => { const x = Number(v); return Number.isFinite(x) ? x : null; };
 const str = (v, max) => String(v === undefined || v === null ? "" : v).replace(/\s+/g, " ").trim().slice(0, max);
@@ -120,119 +119,34 @@ export function cleanLine(r = {}) {
   };
 }
 
-/**
- * The lines as report listings (report.js's listing shape), for a "Past costings" check. Lines in
- * another unit than the request can't be compared, unless none match (then all count, with a
- * warning from the caller).
- */
-export function costingListings(lines, input) {
-  const miss = (l) => l.mismatch ?? mismatch(l.rental, input);
-  const anySame = lines.some((l) => !miss(l) && sameUnit(l.per, input.unit));
-  return lines.map((l, i) => {
-    const m = miss(l);
-    const comparable = !anySame || sameUnit(l.per, input.unit);
-    const facts = [m === "rental" ? "Rental" : "", l.project_code && l.project_name ? `${l.project_code} ${l.project_name}` : l.project_name || l.project_code, l.client,
-      `${l.qty} × ${l.frq || 1} ${l.per || ""}`.trim(), l.markup !== null ? `markup ${Math.round(l.markup * 100)}%` : "",
-      l.client_unit !== null ? `client price PHP ${l.client_unit.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "",
-      l.actual_unit !== null ? `paid PHP ${l.actual_unit.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (PO)` : "",
-      l.final ? "" : "not the final version", l.package ? "a package" : ""].filter(Boolean);
-    return {
-      id: `l${i + 1}`, url: "", host: "",
-      title: l.particular || l.item || "CE line",
-      seller: l.project_code || l.project_name || "Past CE",
-      seller_type: "other",
-      price_text: `PHP ${l.unit_cost.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-      price: l.unit_cost, regular_price: 0, currency: "PHP",
-      units_in_price: comparable ? 1 : 0,
-      price_basis: perText(l.per),
-      mismatch: m,
-      vat: "not_stated", condition: "not_applicable", match: "close", availability: "unknown",
-      page_date: l.date, notes: facts.join(" · "),
-      unit_price: comparable ? l.unit_cost : null, comparable_price: comparable ? l.unit_cost : null,
-      verification: { status: "checked", via: "costings", evidence: [] },
-      costing: l,
-    };
-  });
-}
-
-/** The report (report.js's shape) for a "Past costings" check: listings are the CE lines. */
-export function costingsReport({ input, costings, id, createdAt, service, startedAt }) {
-  const ce = costingListings(costings.lines, input);
-  const pos = costings.pos || [];
-  const listings = [...poListings(pos, input), ...ce].map((l, i) => ({ ...l, id: `l${i + 1}` }));
-  const warnings = [];
-  if (!costings.lines.length && !pos.length) {
-    warnings.push({ from: "service", text: costings.terms.length
-      ? `No past CE line or approved purchase request mentions ${costings.terms.map((t) => `“${t}”`).join(" and ")}. Try fewer or more common words, or a web check.`
-      : "Type a more specific name: the words searched for were all everyday words." });
-  } else {
-    const rentals = listings.filter((l) => l.mismatch === "rental").length, bought = listings.filter((l) => l.mismatch === "purchase").length;
-    if (rentals) warnings.push({ from: "service", text: rentals === listings.length
-      ? `Every line here is a rental, not a purchase, so none is counted in the price to buy. Tick them in only if a rental rate is what you want.`
-      : `${rentals} line${rentals === 1 ? " is a rental, not a purchase" : "s are rentals, not purchases"}, so ${rentals === 1 ? "it isn't" : "they aren't"} counted. Tick ${rentals === 1 ? "it" : "them"} in if you want.` });
-    if (bought) warnings.push({ from: "service", text: `${bought} line${bought === 1 ? " is a purchase, not a rental" : "s are purchases, not rentals"}, so ${bought === 1 ? "it isn't" : "they aren't"} counted. Tick ${bought === 1 ? "it" : "them"} in if you want.` });
-    if (pos.some((p) => p.lot)) warnings.push({ from: "service", text: "Some purchase requests gave the price of the whole lot as the unit price; it's been divided by the count (see each line)." });
-    const other = ce.filter((l) => l.comparable_price === null && !l.mismatch).length;
-    if (other) warnings.push({ from: "service", text: `${other} CE line${other === 1 ? " is" : "s are"} costed per another unit than ${input.unit}, so ${other === 1 ? "it isn't" : "they aren't"} counted.` });
-    if (listings.some((l) => l.verification.via === "po" && l.comparable_price === null)) warnings.push({ from: "service", text: "Purchase requests don't record a unit, so they only count for things priced per piece (or set, pack, lot…). The others are listed for reference." });
-    if (!ce.some((l) => l.comparable_price === null) && costings.lines.some((l) => !l.mismatch && !sameUnit(l.per, input.unit))) {
-      warnings.push({ from: "service", text: `None of these lines is costed per ${input.unit}; they're counted as they are. Check the units.` });
-    }
-    if (costings.lines.length >= MAX_LINES) warnings.push({ from: "service", text: `Only the newest ${MAX_LINES} matching lines are shown. Add a word to narrow it down.` });
-    if (costings.pos_available === false && costings.pos_reason) warnings.push({ from: "service", text: `Purchase requests aren't included: ${costings.pos_reason}` });
-    warnings.push({ from: "service", text: "These are Mineski's own figures: prices paid on approved purchase requests and budgeted unit costs from past CEs (internal: don't share them with clients). Untick lines that aren't the same thing." });
+/** The unit most past CE lines are costed in (lines that aren't the other side of a rental), or "". */
+export function usualUnit(lines = []) {
+  const counts = new Map();
+  for (const l of lines) {
+    if (l.mismatch || !(l.unit_cost > 0) || !l.per) continue;
+    const key = String(l.per).toLowerCase().replace(/^per\s+/, "").trim();
+    counts.set(key, (counts.get(key) || 0) + 1);
   }
-  return {
-    schema: 1, id, created_at: createdAt,
-    request: { ...input, sites: { ...input.sites, list: [...input.sites.list] } },
-    interpreted: input.name, category: "Other", unit: input.unit, currency: "PHP",
-    summary: costings.lines.length || pos.length ? `${[pos.length ? `${pos.length} approved purchase request line${pos.length === 1 ? "" : "s"}` : "", costings.lines.length ? `${costings.lines.length} past CE line${costings.lines.length === 1 ? "" : "s"}` : ""].filter(Boolean).join(" and ")} mention ${costings.terms.join(", ")}.` : "",
-    assumptions: [], warnings, listings, suppliers: [],
-    costings: null,
-    sources: { queries: [{ query: `Past CEs: ${costings.terms.join(" + ")}`, results: costings.lines.length, error: null },
-      { query: `Purchase requests: ${costings.terms.join(" + ")}`, results: pos.length, error: costings.pos_available === false ? costings.pos_reason || "not available" : null }], pages: [] },
-    meta: {
-      service: service.name, version: service.version, runtime: service.runtime, source: "costings",
-      model: "", models_used: [], fallback: false, effort: "", depth: "costings",
-      duration_ms: Date.now() - startedAt, requests: 0, continuations: 0, ended: "submitted",
-      usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, web_search_requests: 0, web_fetch_requests: 0 },
-      cost_usd: { tokens: 0, searches: 0, total: 0 }, priced: true,
-    },
-  };
+  let best = "", n = 0;
+  for (const [k, c] of counts) if (c > n) { best = k; n = c; }
+  return best;
 }
 
-// ---- purchase requests (pos.js) next to the CE lines ------------------------------------------
-/** Units a purchase request's unit price can be compared in (POs record no unit). */
-const PIECE_LIKE = new Set(["piece", "set", "pair", "pack", "box", "ream", "roll", "unit", "lot", "service", "event"]);
 const fmt = (v) => v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
-/** Purchase-request lines as report listings (verification.via "po"). */
-export function poListings(pos, input, start = 0) {
-  const comparableUnit = PIECE_LIKE.has(String(input.unit || "").toLowerCase().replace(/s$/, ""));
-  return pos.map((p, i) => {
-    const comparable = comparableUnit && p.currency === "PHP";
-    const m = p.mismatch ?? mismatch(p.rental, input);
-    return {
-      id: `l${start + i + 1}`, url: "", host: "",
-      title: p.item || "Purchase request",
-      seller: p.supplier || "Supplier not recorded",
-      seller_type: "other",
-      price_text: `${p.currency} ${fmt(p.unit_price)}`,
-      price: p.unit_price, regular_price: 0, currency: p.currency,
-      units_in_price: comparable ? 1 : 0, price_basis: "per unit (the request doesn't record the unit)", mismatch: m,
-      vat: "not_stated", condition: "not_applicable", match: "close", availability: "unknown",
-      page_date: p.date,
-      notes: [m === "rental" || (p.rental && !m) ? "Rental" : "", p.lot, p.request_no, p.project_code && p.project_name ? `${p.project_code} ${p.project_name}` : p.project_name || p.project_code,
-        p.quantity ? `qty ${p.quantity}` : "", p.total ? `total ${p.currency} ${fmt(p.total)}` : ""].filter(Boolean).join(" · "),
-      unit_price: comparable ? p.unit_price : null, comparable_price: comparable ? p.unit_price : null,
-      verification: { status: "checked", via: "po", evidence: [] },
-      po: p,
-    };
-  });
-}
 
 const median = (xs) => { const s = [...xs].sort((a, b) => a - b); return s.length ? (s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2) : null; };
 const month = (d) => { const t = Date.parse(String(d || "").length === 7 ? `${d}-01` : d); return Number.isFinite(t) ? new Date(t).toLocaleString("en-US", { month: "short", year: "numeric", timeZone: "UTC" }) : ""; };
+
+/** CE budgets are compared with the market only when there are at least BUDGET_MIN lines and the
+ *  middle half agrees (the upper quartile at most BUDGET_SPREAD times the lower): a couple of lines,
+ *  or lines for different kinds of the thing, give a meaningless middle. */
+export const BUDGET_MIN = 3, BUDGET_SPREAD = 2;
+export function budgetAgrees(lines) {
+  const costs = lines.map((l) => l.unit_cost).filter((v) => v > 0).sort((a, b) => a - b);
+  if (costs.length < BUDGET_MIN) return false;
+  const q = (p) => { const i = (costs.length - 1) * p, lo = Math.floor(i), hi = Math.ceil(i); return costs[lo] + (costs[hi] - costs[lo]) * (i - lo); };
+  return q(0.75) <= q(0.25) * BUDGET_SPREAD;
+}
 
 /**
  * Mineski's own prices, in a few lines for Claude's request: what was paid (approved purchase
@@ -244,7 +158,9 @@ export function referenceText(costings, input) {
   const miss = (x) => x.mismatch ?? mismatch(x.rental, input);
   const pos = all.filter((p) => !miss(p));
   const others = all.filter((p) => miss(p));
-  const lines = ((costings && costings.lines) || []).filter((l) => l.unit_cost > 0 && !miss(l) && sameUnit(l.per, input.unit));
+  // The request names no unit unless it says "per day" and the like: then the CE lines' usual one.
+  const unit = input.unit || usualUnit(((costings && costings.lines) || []).filter((l) => !miss(l))) || "piece";
+  const lines = ((costings && costings.lines) || []).filter((l) => l.unit_cost > 0 && !miss(l) && sameUnit(l.per, unit));
   const otherLines = ((costings && costings.lines) || []).filter((l) => miss(l)).length;
   if (!all.length && !lines.length && !otherLines) return "";
   const out = ["Mineski's own records for this, as reference (internal figures: never report them as listings, and don't quote the amounts in the report):"];
@@ -259,14 +175,19 @@ export function referenceText(costings, input) {
       ? `- ${n} past line${n === 1 ? " was a purchase" : "s were purchases"}, not rentals: not comparable with rental rates, so leave ${n === 1 ? "it" : "them"} out of any comparison.`
       : `- ${n} past line${n === 1 ? " was a rental" : "s were rentals"} (Mineski rented this${who.length ? `, from ${who.join(", ")}` : ""}): rental rates are not purchase prices, so leave ${n === 1 ? "it" : "them"} out of any comparison.`);
   }
+  const budget = budgetAgrees(lines);
   if (lines.length) {
     const dates = lines.map((l) => l.date).filter(Boolean).sort();
-    out.push(`- Budgeted on ${lines.length} past CE line${lines.length === 1 ? "" : "s"}: middle PHP ${fmt(median(lines.map((l) => l.unit_cost)))} per ${input.unit}${dates.length ? ` (${month(dates[0])} to ${month(dates[dates.length - 1])})` : ""}.`);
+    const costs = lines.map((l) => l.unit_cost).sort((x, y) => x - y);
+    const when = dates.length ? ` (${month(dates[0])} to ${month(dates[dates.length - 1])})` : "";
+    out.push(budget
+      ? `- Budgeted on ${lines.length} past CE lines: middle PHP ${fmt(median(costs))} per ${unit}${when}.`
+      : `- Budgeted on ${lines.length} past CE line${lines.length === 1 ? ` at PHP ${fmt(costs[0])}` : `s from PHP ${fmt(costs[0])} to PHP ${fmt(costs[costs.length - 1])}`} per ${unit}${when}: ${lines.length < BUDGET_MIN ? "too few" : "too far apart"} to compare with, so don't compare today's prices with these budgets.`);
   }
   const suppliers = [...new Set(pos.map((p) => p.supplier).filter(Boolean))].slice(0, 5);
   if (suppliers.length) out.push(`Mineski has bought this from: ${suppliers.join(", ")}. If they publish prices online, check them first.`);
-  if (!pos.length && !lines.length) {
-    out.push(`Mineski has no past ${rentWant ? "rental" : "purchase"} price for this, so don't compare today's prices with these records.`);
+  if (!pos.length && !budget) {
+    out.push(`Mineski has no past ${rentWant ? "rental" : "purchase"} price for this that can be compared, so don't compare today's prices with these records; you may say in the summary that there's nothing comparable.`);
     return out.join("\n");
   }
   out.push("Each paid price is per unit as recorded on the request, which may cover several days of a rental or a lot; if a past price clearly isn't for the same thing or unit, say so instead of comparing.");

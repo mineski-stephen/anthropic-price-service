@@ -2,7 +2,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { searchTerms, sameUnit, findCostings, cleanLine, costingListings, costingsReport } from "../src/costings.js";
+import { searchTerms, sameUnit, findCostings, cleanLine, usualUnit, referenceText, markRentals } from "../src/costings.js";
 import { readInput, buildTools } from "../src/request.js";
 import { createService } from "../src/service.js";
 import { parseLines } from "../src/ndjson.js";
@@ -78,38 +78,19 @@ test("cleanLine works out the client and paid price per unit", () => {
   assert.equal(d.actual_unit, null);
 });
 
-test("costing listings: only the requested unit counts, unless no line uses it", () => {
-  const lines = ROWS.map(cleanLine);
-  const perPiece = costingListings(lines, readInput({ name: "Monoblock chair", unit: "piece" }));
-  assert.equal(perPiece[0].comparable_price, 280);
-  assert.equal(perPiece[1].comparable_price, null);
-  assert.equal(perPiece[0].verification.via, "costings");
-  assert.equal(perPiece[0].url, "");
-  assert.match(perPiece[0].notes, /P0001 Example Cup · Example Client · 200 × 1 pcs · markup 20% · client price PHP 336\.00 · paid PHP 270\.00 \(PO\)/);
-  assert.match(perPiece[1].notes, /not the final version/);
-  const perSqm = costingListings(lines, readInput({ name: "Monoblock chair", unit: "sqm" }));
-  assert.ok(perSqm.every((l) => l.comparable_price > 0));
+test("without a unit in the request, the CE lines' usual unit is the one compared", () => {
+  const lines = markRentals({ lines: ROWS.map(cleanLine), pos: [] }, readInput({ name: "Monoblock chair" })).lines;
+  assert.equal(usualUnit(lines), "pcs", "the per-day line is a rental, so it doesn't count");
+  const text = referenceText({ lines, pos: [] }, readInput({ name: "Monoblock chair" }));
+  assert.match(text, /Budgeted on 1 past CE line at PHP 280\.00 per pcs/);
+  assert.equal(usualUnit([]), "");
 });
 
-test("a past-costings report: listings from the CE lines, internal-use warning, no cost", () => {
-  const input = readInput({ source: "costings", name: "Monoblock chair", unit: "piece" });
-  const r = costingsReport({ input, costings: { available: true, terms: ["monoblock", "chair"], lines: ROWS.map(cleanLine) }, id: "r1",
-    createdAt: "2026-11-24T00:00:00Z", service: { name: "price-research", version: "x", runtime: "node" }, startedAt: Date.now() });
-  assert.equal(r.meta.source, "costings");
-  assert.equal(r.meta.cost_usd.total, 0);
-  assert.equal(r.listings.length, 2);
-  assert.ok(r.warnings.some((w) => /1 line is a rental, not a purchase/.test(w.text)));   // the per-day line
-  assert.ok(r.warnings.some((w) => /don't share them with clients/.test(w.text)));
-  const none = costingsReport({ input, costings: { available: true, terms: ["zzz"], lines: [] }, id: "r2", createdAt: "x",
-    service: { name: "p", version: "x", runtime: "node" }, startedAt: Date.now() });
-  assert.ok(none.warnings.some((w) => /No past CE line or approved purchase request mentions “zzz”/.test(w.text)));
-});
-
-test("Haiku gets the plain search tools; Opus and Sonnet the filtering ones", () => {
-  const h = buildTools(readInput({ name: "Chair", model: "claude-haiku-5-5", depth: "quick", suppliers: false }));
+test("Quick is Haiku's plain search tools; Standard and Thorough get the filtering ones", () => {
+  const h = buildTools(readInput({ name: "Chair", depth: "quick" }));
   assert.deepEqual(h.slice(0, 2).map((t) => t.type), ["web_search_20250305", "web_fetch_20250910"]);
-  assert.equal(h[0].max_uses, 3);
-  const o = buildTools(readInput({ name: "Chair", model: "claude-opus-5-5" }));
+  assert.equal(h[0].max_uses, 4);
+  const o = buildTools(readInput({ name: "Chair", depth: "thorough" }));
   assert.deepEqual(o.slice(0, 2).map((t) => t.type), ["web_search_20260318", "web_fetch_20260318"]);
 });
 
@@ -126,69 +107,56 @@ function world({ env = {}, db = fakeDb(), answers = [] } = {}) {
     if (url === "https://api.anthropic.com/v1/messages") { w.bodies.push(JSON.parse(init.body)); return sseResponse(answers[n++], { signal: init.signal }); }
     throw new Error(`unexpected call ${url}`);
   };
-  w.handle = createService({ ANTHROPIC_API_KEY: "sk-ant-test-0123456789", ...env }, { prompt: PROMPT, fetch, db, log: (l) => w.logs.push(l) });
+  w.handle = createService({ ANTHROPIC_API_KEY: "sk-ant-test-0123456789", ...env }, { prompt: PROMPT, fetch, db, images: false, log: (l) => w.logs.push(l) });
   w.post = async (body, { token = "u-good-token-0123456789abcdef" } = {}) => {
     const res = await w.handle(new Request("http://svc/research", { method: "POST",
       headers: { "Content-Type": "application/json", Origin: "http://127.0.0.1:9128", Authorization: `Bearer ${token}` }, body: JSON.stringify(body) }));
     if (!(res.headers.get("Content-Type") || "").includes("ndjson")) return { status: res.status, body: await res.json() };
     const [lines] = parseLines(`${await res.text()}\n`);
-    return { status: res.status, lines, last: lines[lines.length - 1] };
+    return { status: res.status, lines, last: lines[lines.length - 1], report: (lines.find((l) => l.type === "report") || {}).report };
   };
   return w;
 }
 
-test("source costings: no Claude call, the CE lines as the report", async () => {
-  const w = world();
-  const r = await w.post({ source: "costings", name: "Monoblock chair", unit: "piece" });
-  assert.deepEqual(r.lines.map((l) => l.kind || l.type), ["start", "costings", "checking", "report"]);
-  assert.equal(r.last.report.listings.length, 2);
-  assert.equal(w.bodies.length, 0);
-  assert.ok(w.logs.some((l) => /^costings 200 .*lines=2/.test(l)));
-});
-
-test("past costings are refused when the login check is off, or there's no database", async () => {
-  const off = await world({ env: { REQUIRE_LARK_LOGIN: "false" } }).post({ source: "costings", name: "Monoblock chair" });
-  assert.equal(off.last.type, "error");
-  assert.equal(off.last.error.code, "costings_unavailable");
-  assert.match(off.last.error.message, /Lark login/);
-  // Without the database, approved purchase requests (Lark) still answer.
-  const nodb = await world({ db: null }).post({ source: "costings", name: "Monoblock chair" });
-  assert.equal(nodb.last.type, "report");
-  assert.equal(nodb.last.report.costings, null);
+test("past costings need the login check on; without the database, purchase requests still come", async () => {
+  const off = world({ env: { REQUIRE_LARK_LOGIN: "false" }, answers: [eventsFor(researchBlocks(), { stop: "tool_use", searches: 1, fetches: 2 })] });
+  const r = await off.post({ name: "Monoblock chair" });
+  assert.equal(r.report.costings.available, false);
+  assert.match(r.report.costings.reason, /Lark login/);
+  const nodb = world({ db: null, answers: [eventsFor(researchBlocks(), { stop: "tool_use", searches: 1, fetches: 2 })] });
+  const n = await nodb.post({ name: "Monoblock chair" });
+  assert.equal(n.report.costings.ce_available, false);
+  assert.equal(n.report.costings.pos_available, true);
   const info = await (await world({ env: { REQUIRE_LARK_LOGIN: "false" } }).handle(new Request("http://svc/"))).json();
   assert.equal(info.costings.available, false);
 });
 
 test("a web check carries the past costings alongside", async () => {
   const w = world({ answers: [eventsFor(researchBlocks(), { stop: "tool_use", searches: 1, fetches: 2 })] });
-  const r = await w.post({ name: "Monoblock chair", unit: "piece", depth: "quick", model: "claude-haiku-5-5" });
-  assert.equal(r.last.type, "report");
-  assert.equal(r.last.report.meta.source, "web");
-  assert.equal(r.last.report.costings.lines.length, 2);
+  const r = await w.post({ name: "Monoblock chair", unit: "piece", depth: "quick" });
+  assert.equal(r.report.meta.source, "web");
+  assert.equal(r.report.costings.lines.length, 2);
   assert.ok(r.lines.some((l) => l.kind === "costings" && l.count === 2));
   assert.equal(w.bodies[0].tools[0].type, "web_search_20250305");
   const sent = w.bodies[0].messages[0].content[0].text;
   assert.match(sent, /Mineski's own records for this/, "the past figures go to Claude as reference");
-  assert.match(sent, /Budgeted on 1 past CE line: middle PHP 280\.00 per piece/);
+  assert.match(sent, /Budgeted on 1 past CE line at PHP 280\.00 per piece.*too few to compare with/);
   assert.ok(!/Example Client/.test(sent), "client names stay out");
   assert.deepEqual(r.lines.slice(0, 2).map((l) => l.kind || l.type), ["start", "costings"]);
 });
 
-test("the check depth: Haiku with 5 page reads of 4,000 tokens, marketplaces skipped, retailers suggested", async () => {
+test("the quick depth: Haiku with 6 page reads of 4,000 tokens, marketplaces skipped, retailers suggested", async () => {
   const { userText, buildBody, DEPTHS } = await import("../src/request.js");
-  const input = readInput({ name: "Monoblock chair", model: "claude-haiku-5-5", depth: "check", suppliers: false });
+  const input = readInput({ name: "Monoblock chair", depth: "quick" });
   const [search, fetch] = buildTools(input);
   assert.equal(search.type, "web_search_20250305");
-  assert.equal(search.max_uses, 3);
-  assert.equal(fetch.max_uses, 5);
+  assert.equal(search.max_uses, 4);
+  assert.equal(fetch.max_uses, 6);
   assert.equal(fetch.max_content_tokens, 4000);
   assert.ok(search.blocked_domains.includes("lazada.com.ph") && fetch.blocked_domains.includes("shopee.ph"));
   assert.equal(buildBody(input, { system: "x", messages: [] }).output_config.effort, "medium");
   const text = userText(input, "2026-11-24");
   assert.match(text, /open the pages of the most useful offers/);
   assert.match(text, /ACE Hardware, Wilcon Depot/);
-  assert.equal(DEPTHS.check.maxUsd, 0.15);
-  const own = buildTools(readInput({ name: "Chair", model: "claude-haiku-5-5", depth: "check", sites: { mode: "only", list: ["acehardware.ph"] } }));
-  assert.deepEqual(own[0].allowed_domains, ["acehardware.ph"]);
-  assert.equal(own[0].blocked_domains, undefined);
+  assert.equal(DEPTHS.quick.maxUsd, 0.2);
 });

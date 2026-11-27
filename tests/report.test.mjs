@@ -9,11 +9,11 @@ import { researchBlocks, REPORT, strip } from "./helpers.mjs";
 
 const near = (a, b, msg) => assert.ok(Math.abs(a - b) < 1e-9, msg || `${a} is not ${b}`);
 
-const input = readInput({ name: "Monoblock chair", quantity: 200, city: "Manila" });
+const input = readInput({ name: "Monoblock chair", depth: "standard" });
 const run = (extra = {}) => {
   const tally = createTally();
   tally.add("claude-opus-5-5", { input_tokens: 20000, output_tokens: 4000, cache_read_input_tokens: 10000, server_tool_use: { web_search_requests: 5, web_fetch_requests: 3 } });
-  return { requests: 1, continuations: 0, models: ["claude-opus-5-5"], ended: "submitted", tally, ...extra };
+  return { requests: 1, continuations: 0, models: [input.model], ended: "submitted", tally, ...extra };
 };
 const build = (raw = REPORT, r = run()) => buildReport({ input, raw, ev: collectEvidence(strip(researchBlocks())), run: r, id: "r1",
   createdAt: "2026-11-23T01:00:00.000Z", service: { name: "price-research", version: "0.1.0", runtime: "node" }, startedAt: Date.now() - 1000 });
@@ -31,6 +31,15 @@ test("the report carries checked listings with unit and comparable prices", () =
   assert.equal(r.listings[0].host, "ace-example.ph");
   assert.equal(r.suppliers[0].contact.status, "checked");
   assert.equal(r.request.name, "Monoblock chair");
+});
+
+test("the report says what it priced: Claude's kind and unit, the request as asked, no photo yet", () => {
+  const r = build();
+  assert.equal(r.kind, "item", "Claude gave no kind here, so the first guess stands");
+  assert.equal(build({ ...REPORT, kind: "service" }).kind, "service");
+  assert.equal(r.unit, "piece");
+  assert.deepEqual(r.request, { name: "Monoblock chair", details: "", depth: "standard", model: "claude-sonnet-5-5", search_id: "" });
+  assert.ok(r.listings.every((l) => l.image === ""));
 });
 
 test("the service adds its own warnings: unseen links, unreadable pages", () => {

@@ -2,6 +2,29 @@
 
 Newest first. Each entry's number is `VERSION` in `src/service.js` and `version` in `package.json`.
 
+## 0.7.1 · Nov 27, 2026
+
+- Setting up the saved searches table (`POST /searches/setup`) also names the first column Item when every record leaves it blank: a new Lark table comes with five blank rows, so before this its empty "Text" column stayed first and Item was added after it. A first column that holds anything is still left alone.
+
+## 0.7.0 · Nov 27, 2026
+
+Simpler searches and a shared list of every search, for the page's 0.7.0. The folder moved to `tech/anthropic-price-service` (it was `tech/gemini-price-check/service`). Includes 0.6.2, which wasn't deployed.
+
+- **A simpler request:** `POST /research` takes `{ name, details, depth, search_id? }`. Every search is for the Philippines in pesos, new or used, with suppliers. Claude decides whether it's an item or a service and the unit it's priced in (the report's new `kind`, and `unit`); a first guess from the words (`guessRequest`) is used only to match Mineski's past prices before the research, and the past prices are marked again with Claude's answer after it. `quantity`, `unit`, `market`, `city`, `condition`, `suppliers`, `model`, `sites` and `source` are gone (`kind` and `unit` are still taken as hints).
+- **Depth picks the model:** Quick is Claude Haiku 5.5 (the old Quick web check, now with a search and a page read more for suppliers, capped at US$0.20), Standard is Sonnet 5.5, Thorough is Opus 5.5 (8 and 12 searches with suppliers). `MODELS` limits them; GET / lists each depth's model. `depth: "check"` is read as Quick. The past-costings-only search is gone; past costings come with every search.
+- **Saved searches:** a finished search is saved to a Lark table (`SEARCHES_TABLE_ID`, default the procurement Base's `tblYUSBGnqwDp0PN`) as the person, after the report is streamed and even if the page has gone (`src/searches.js`). The stream ends with a new `saved` line: the record, or why it isn't saved. Every run of the same search shares a Search ID, so its versions are its dates. New routes: `GET /searches` (all, light, newest first), `GET /searches/<record_id>` (with the report), `PATCH /searches/<record_id>` (`{ included }`: the price is worked out again and saved), `POST /searches` (save a report again), and `GET`/`POST /searches/setup` (check the table's columns, or add the missing ones through the Lark API; an empty table's first column becomes Item). `READ_RATE_LIMIT_PER_HOUR` (default 600) limits these.
+- **The price is worked out here too:** `src/stats.js` is the page's own file (check:shell checks they're identical), so the saved Typical, Low and High prices are the ones the page shows. The report carries `price { typical, low, high, q1, q3, n, confidence, included }`. Used listings are left out while there are at least 2 new ones (they can be ticked in).
+- **Product photos:** after the report, each listing's page is read once (5 s at most) for the picture it names (`og:image`, `twitter:image`, a JSON-LD image or `image_src`; https only, public hosts only). Pages that refuse servers (Lazada, Shopee) get none, and the page shows a placeholder. A new `images` activity line.
+- The report the page gets (and the table keeps) no longer carries the evidence excerpts; page text stays on the server. Its `request` is `{ name, details, depth, model, search_id }`.
+- The prompt drops the quotation, asks Claude to decide the kind and unit, allows new and used, and sellers abroad only if they ship to the Philippines.
+- CORS allows PATCH. `COSTINGS_RATE_LIMIT_PER_HOUR` is gone.
+
+## 0.6.2 · Nov 25, 2026
+
+From the third signed-in test: with the rentals gone, Claude compared the market with the middle of just two CE budgets (PHP 70 and PHP 650, probably different chairs).
+
+- Claude is asked to compare the market with CE budgets only when there are at least 3 lines (`BUDGET_MIN`) and their middle half agrees (upper quartile at most twice the lower, `BUDGET_SPREAD`). Otherwise the reference gives the range and says not to compare with the budgets; with no comparable purchase either, Claude may say there's nothing comparable.
+
 ## 0.6.1 · Nov 25, 2026
 
 From the second signed-in test: two chair lines ("30 PCS MONOBLOCK CHAIR WITH BLACK COVER (NOVEMBER 4-6, 2026)", from a "Party Needs Rental" supplier) were still counted as purchases.

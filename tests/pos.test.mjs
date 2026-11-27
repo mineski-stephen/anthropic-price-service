@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { cellText, cellList, cellNumber, poLines, findPOs, PO_FIELDS } from "../src/pos.js";
-import { cleanLine, referenceText, poListings, costingsReport } from "../src/costings.js";
+import { cleanLine, referenceText } from "../src/costings.js";
 import { readInput, userText } from "../src/request.js";
 
 const rec = (fields) => ({ record_id: "rec1", fields });
@@ -80,23 +80,11 @@ test("the reference for Claude: paid and budgeted prices and suppliers, no clien
     qty: 100, frq: 1, per: "pcs", unit_price_php: 300, markup: 0.2, client_price_php: 36000, price_date: "2026-05-01", in_final: 1 })];
   const text = referenceText({ lines, pos }, input);
   assert.match(text, /Paid PHP 270\.00 per unit for 300 to Example Plastics Inc\. \(Sep 2026\)/);
-  assert.match(text, /Budgeted on 1 past CE line: middle PHP 300\.00 per piece/);
+  assert.match(text, /Budgeted on 1 past CE line at PHP 300\.00 per piece \(May 2026 to May 2026\): too few to compare with/);
   assert.match(text, /Mineski has bought this from: Example Plastics Inc\./);
   assert.ok(!/Secret Client/.test(text), "client names stay out");
   assert.equal(referenceText({ lines: [], pos: [] }, input), "");
   assert.match(userText(input, "2026-11-25", text), /Mineski's own records for this[\s\S]*When you're done, call submit_report\./);
-});
-
-test("purchase requests count only for piece-like units; in a past-costings report they come first", () => {
-  const pos = poLines(CHAIRS, ["chair"]);
-  assert.equal(poListings(pos, readInput({ name: "Chair", unit: "piece" }))[0].comparable_price, 270);
-  assert.equal(poListings(pos, readInput({ name: "LED wall", unit: "sqm per day" }))[0].comparable_price, null);
-  const r = costingsReport({ input: readInput({ source: "costings", name: "Monoblock chair", unit: "piece" }),
-    costings: { available: true, terms: ["monoblock", "chair"], lines: [], pos, pos_available: true },
-    id: "r", createdAt: "2026-11-25T00:00:00Z", service: { name: "p", version: "x", runtime: "node" }, startedAt: Date.now() });
-  assert.equal(r.listings[0].verification.via, "po");
-  assert.equal(r.listings[0].seller, "Example Plastics Inc.");
-  assert.match(r.summary, /^1 approved purchase request line mention monoblock, chair\.$/);
 });
 
 // ---- rentals and lot prices (0.6.0), in the shapes the live Procurement table returned ------------
@@ -139,12 +127,11 @@ test("rentals don't count toward a price to buy, nor in Claude's comparison", ()
   assert.equal(ce.rental, true);
   const costings = markRentals({ available: true, terms: ["monoblock", "chair"], lines: [ce], pos }, buy);
 
-  const r = costingsReport({ input: buy, costings, id: "x", createdAt: "", service: { name: "price-research", version: "t", runtime: "node" }, startedAt: Date.now() });
-  const rentalRows = r.listings.filter((l) => l.mismatch === "rental");
-  assert.equal(rentalRows.length, 2);
-  assert.ok(rentalRows.every((l) => /Rental/.test(l.notes)));
-  assert.equal(r.listings.find((l) => l.verification.via === "costings").price_basis, "per day");
-  assert.ok(r.warnings.some((w) => /2 lines are rentals/.test(w.text)));
+  assert.deepEqual(costings.pos.map((p) => p.mismatch), ["rental", ""]);
+  assert.equal(costings.lines[0].mismatch, "rental");
+  // Claude says it's a service: a service's day rate isn't a rental, so nothing is left out.
+  const asService = markRentals({ lines: [{ ...ce }], pos: pos.map((p) => ({ ...p })) }, { ...buy, kind: "service" });
+  assert.ok([...asService.lines, ...asService.pos].every((x) => x.mismatch === ""));
 
   const ref = referenceText(costings, buy);
   assert.match(ref, /Paid PHP 270\.00 per unit for 300/);
@@ -154,7 +141,7 @@ test("rentals don't count toward a price to buy, nor in Claude's comparison", ()
 
   const onlyRent = markRentals({ available: true, terms: ["monoblock", "chair"], lines: [ce], pos: [pos[0]] }, buy);
   const ref2 = referenceText(onlyRent, buy);
-  assert.match(ref2, /no past purchase price for this, so don't compare/);
+  assert.match(ref2, /no past purchase price for this that can be compared, so don't compare/);
   assert.doesNotMatch(ref2, /higher, lower or about the same/);
 });
 
@@ -167,4 +154,20 @@ test("a hire period, or a rental company as supplier, marks a purchase request a
   const [c] = poLines(rec({ Status: "Approved", "Particulars_Item": [{ text: "Monoblock chair, white" }], "Particulars_Quantity": 300,
     "Particulars_Unit Price": 270, "Supplier Details_Supplier Name": [{ text: "Example Plastics Trading" }] }), ["monoblock", "chair"]);
   assert.equal(c.rental, false);
+});
+
+test("CE budgets are compared only when there are 3 or more that roughly agree", async () => {
+  const { budgetAgrees } = await import("../src/costings.js");
+  const ce = (v, d = "2026-05-01") => cleanLine({ item: "Monoblock chair", qty: 100, frq: 1, per: "pcs", unit_price_php: v, price_date: d, in_final: 1 });
+  const input = readInput({ name: "monoblock chair", unit: "piece" });
+  assert.equal(budgetAgrees([ce(280), ce(300), ce(320)]), true);
+  assert.equal(budgetAgrees([ce(70), ce(650)]), false);
+  assert.equal(budgetAgrees([ce(70), ce(300), ce(650)]), false);
+  const agree = referenceText({ lines: [ce(280), ce(300), ce(320)], pos: [] }, input);
+  assert.match(agree, /Budgeted on 3 past CE lines: middle PHP 300\.00 per piece/);
+  assert.match(agree, /higher, lower or about the same/);
+  const spread = referenceText({ lines: [ce(70, "2026-03-01"), ce(650, "2026-09-01")], pos: [] }, input);
+  assert.match(spread, /Budgeted on 2 past CE lines from PHP 70\.00 to PHP 650\.00 per piece \(Mar 2026 to Sep 2026\): too few to compare with/);
+  assert.match(spread, /nothing comparable/);
+  assert.doesNotMatch(spread, /higher, lower or about the same/);
 });
